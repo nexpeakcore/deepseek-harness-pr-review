@@ -145,3 +145,57 @@ def test_build_comment_summary_badges():
     assert "Risks found:" in comment
     assert "Doc errors:" in comment
     assert "background-color" in comment
+
+
+def _snap(**kw):
+    base = {"owner": "o", "repo": "r", "pr": 9, "title": "t", "body": "",
+            "author": "a", "base": "main", "head": "x", "head_sha": "1930e24abc",
+            "labels": [], "files": [], "commits": [], "threads": []}
+    base.update(kw)
+    return base
+
+
+EMPTY = {"claims": [], "docs": [], "impact": [], "threads": [],
+         "unresolved_questions": []}
+
+
+def test_comment_states_the_review_finished():
+    """Comment được PATCH tại chỗ nên GitHub không báo — phải tự nói là đã xong."""
+    body = build_comment(_snap(), [], EMPTY, [], rounds=3,
+                         completed_at="2026-08-18 11:02 UTC")
+    assert "Review complete" in body
+    assert "2026-08-18 11:02 UTC" in body     # biết là mới hay cũ
+    assert "round 3" in body
+    assert "`1930e24`" in body                 # biết review đúng commit nào
+    assert "updated in place" in body          # biết vì sao không có notification
+
+
+def test_completion_line_sits_above_the_collapsed_sections():
+    """Phải nằm trên các <details> vì chúng mặc định đóng."""
+    body = build_comment(_snap(), [], EMPTY, [], completed_at="x")
+    assert body.index("Review complete") < body.index("<details")
+
+
+def _completion_line_of(body: str) -> str:
+    """Chỉ lấy dòng completion — header badge có `background-color` (chứa
+    'round') nên assert trên cả header là bẫy."""
+    return next(ln for ln in body.splitlines() if ln.startswith("✅"))
+
+
+def test_completion_line_survives_missing_metadata():
+    """Không có rounds.txt / head_sha → vẫn báo hoàn thành, không vỡ."""
+    body = build_comment(_snap(head_sha=""), [], EMPTY, [], rounds=None,
+                         completed_at="2026-08-18 11:02 UTC")
+    line = _completion_line_of(body)
+    assert "Review complete" in line
+    assert "2026-08-18 11:02 UTC" in line
+    assert "round" not in line
+    assert "commit `" not in line
+
+
+def test_completion_timestamp_defaults_to_now():
+    import time
+
+    body = build_comment(_snap(), [], EMPTY, [])
+    assert time.strftime("%Y-%m-%d", time.gmtime()) in body
+    assert "UTC" in body
