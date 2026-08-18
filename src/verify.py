@@ -17,7 +17,7 @@ import sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from src.agent_pool import agent_slot
+from src.agent_pool import agent_slot, max_agents
 from src.docs_rank import rank_docs
 
 # Above this, one agent starts trading depth per claim for coverage. PRs with
@@ -271,13 +271,33 @@ def _run_agent(cfg: dict, workspace: Path, session_dir: Path, task: dict) -> str
 
 def _execute(cfg: dict, workspace: Path, session_dir: Path, task: dict,
              runner) -> tuple[dict, dict | None, str | None]:
-    """Run one agent under a global slot. Never raises — the caller decides."""
+    """Run one agent under a global slot. Never raises — the caller decides.
+
+    Progress is printed as each agent finishes: verify is the phase that takes
+    minutes, and without a line per agent the dashboard's live log shows nothing
+    for the whole of it.
+    """
+    import time
+
+    started = time.monotonic()
     try:
+        waiting = time.monotonic()
         with agent_slot(f"{session_dir.name}:{task['name']}"):
+            queued = time.monotonic() - waiting
+            if queued > 1:
+                print(f"      {task['name']}: waited {queued:.0f}s for an agent slot",
+                      flush=True)
             response = runner(cfg, workspace, session_dir, task)
         (session_dir / f"agent-log-{task['name']}.txt").write_text(response or "")
-        return task, read_part(workspace / task["out"], task["keys"]), None
+        part = read_part(workspace / task["out"], task["keys"])
+        counts = ", ".join(f"{len(part[k])} {k}" for k in task["keys"]
+                           if k != "unresolved_questions")
+        print(f"      {task['name']}: done in {time.monotonic() - started:.0f}s"
+              f"{f' ({counts})' if counts else ''}", flush=True)
+        return task, part, None
     except (RuntimeError, OSError, ValueError, TimeoutError) as e:
+        print(f"      {task['name']}: FAILED after "
+              f"{time.monotonic() - started:.0f}s — {e}", flush=True)
         return task, None, str(e)
 
 
@@ -294,6 +314,8 @@ def run_verify(cfg: dict, workspace: Path, session_dir: Path, snapshot: dict,
     for task in tasks:
         (workspace / task["out"]).unlink(missing_ok=True)
 
+    print(f"      {len(tasks)} agents: {', '.join(t['name'] for t in tasks)}"
+          f" (cap {max_agents()} concurrent)", flush=True)
     with ThreadPoolExecutor(max_workers=len(tasks)) as pool:
         results = list(pool.map(
             lambda t: _execute(cfg, workspace, session_dir, t, runner), tasks))

@@ -11,6 +11,7 @@ from pathlib import Path
 
 from src.config import load_config
 from src.gh import gh_available, run_gh
+from src.claims import all_inferred
 from src.review_proc import review_lock_alive
 from src.human_gate import run_gate
 from src.synthesize import (build_comment, build_ping, build_report,
@@ -151,6 +152,17 @@ def _bump_rounds(session_dir: Path) -> None:
     except (OSError, ValueError):
         current = 0
     path.write_text(str(current + 1))
+
+
+def _phase(step: int, title: str, detail: str = "") -> None:
+    """One line per phase, flushed.
+
+    The dashboard tails review.log live, but a review used to print nothing at
+    all until it finished — so for the several minutes that verify takes, the
+    panel read "(no output yet)" and a healthy review was indistinguishable
+    from a hung one.
+    """
+    print(f"[{step}/5] {title}" + (f" — {detail}" if detail else ""), flush=True)
 
 
 def _review_lock_path(session_dir: Path) -> Path:
@@ -335,22 +347,35 @@ def main(argv: list[str] | None = None) -> int:
 
             snapshot = _load_or_skip("snapshot.json", session_dir, args.force)
             if snapshot is None:
+                _phase(1, "snapshot", f"{owner}/{repo}#{num}")
                 snapshot = build_snapshot(owner, repo, int(num), session_dir)
+            _phase(1, "snapshot", f"{len(snapshot['files'])} files, "
+                                  f"{len(snapshot['commits'])} commits")
+
             claims = _load_or_skip("claims.json", session_dir, args.force)
             if claims is None:
+                _phase(2, "claims", "reading the PR description")
                 claims = extract_claims(
                     snapshot, {"model": cfg.model, "api_key": cfg.api_key,
                                "base_url": cfg.base_url}, session_dir)
+            source = "inferred from code" if all_inferred(claims) else "from description"
+            _phase(2, "claims", f"{len(claims)} claims {source}")
+
             findings = _load_or_skip("findings.json", session_dir, args.force)
             if findings is None:
                 workspace = session_dir / "workspace"
+                _phase(3, "workspace", "cloning + checking out the PR head")
                 setup_workspace(owner, repo, int(num), workspace)
+                _phase(4, "verify", "starting agents")
                 findings = run_verify(
                     {"model": cfg.model}, workspace, session_dir, snapshot, claims)
                 (session_dir / "findings.json").write_text(
                     json.dumps(findings, indent=2))
                 _bump_rounds(session_dir)
 
+        _phase(5, "report", f"{len(findings.get('claims', []))} claims, "
+                            f"{len(findings.get('docs', []))} docs, "
+                            f"{len(findings.get('impact', []))} impact")
         answers = _load_or_skip("answers.json", session_dir, args.force)
         if answers is None:
             answers = run_gate(findings, session_dir,

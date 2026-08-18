@@ -316,3 +316,27 @@ def test_global_cap_throttles_the_fan_out(tmp_path, monkeypatch):
     runner, state = _concurrency_probe({"unresolved_questions": []})
     run_verify({"model": "m"}, ws, sd, SNAP, _claims(20), runner=runner)
     assert state["peak"] == 2
+
+
+def test_verify_reports_progress_per_agent(tmp_path, capsys, monkeypatch):
+    """Verify takes minutes; without a line per agent the live log stays empty."""
+    monkeypatch.setenv("HARNESS_MAX_AGENTS", "4")
+    ws, sd = tmp_path / "ws", tmp_path / "sd"
+    ws.mkdir()
+
+    runner, _ = _concurrency_probe({"unresolved_questions": []}, hold=0)
+    run_verify({"model": "m"}, ws, sd, SNAP, _claims(20), runner=runner)
+
+    out = capsys.readouterr().out
+    assert "4 agents: claims-1, claims-2, docs, impact" in out
+    assert "cap 4 concurrent" in out
+    for name in ("claims-1", "claims-2", "docs", "impact"):
+        assert f"{name}: done in" in out
+
+
+def test_verify_reports_a_failed_agent_in_the_log(tmp_path, capsys):
+    ws, sd = tmp_path / "ws", tmp_path / "sd"
+    ws.mkdir()
+    run_verify({"model": "m"}, ws, sd, SNAP, _claims(1),
+               runner=_fake_runner(PAYLOADS, fail=("docs",)))
+    assert "docs: FAILED after" in capsys.readouterr().out

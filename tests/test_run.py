@@ -469,3 +469,33 @@ def test_ping_still_posts_when_report_comment_url_is_unavailable(tmp_path,
     assert main(["demo/app", "7", "--skip-human"]) == 0
     assert "Harness review" in calls["ping"]
     assert "Full report" not in calls["ping"]
+
+
+def test_review_prints_phase_progress(tmp_path, monkeypatch, capsys):
+    """A running review must be distinguishable from a hung one in review.log."""
+    import json as _json
+
+    from src.run import main
+
+    session = tmp_path / "demo" / "app" / "pr-7"
+    session.mkdir(parents=True)
+    (session / "snapshot.json").write_text(_json.dumps(
+        {"pr": 7, "owner": "demo", "repo": "app", "title": "t", "author": "a",
+         "base": "main", "head": "h", "body": "b",
+         "files": [{"filename": "a.py"}], "commits": [{"sha": "x"}],
+         "threads": [], "linked_issues": []}))
+    (session / "claims.json").write_text(_json.dumps(
+        [{"id": "C1", "text": "x", "category": "feature", "source": "stated"}]))
+    (session / "findings.json").write_text(_json.dumps(
+        {"claims": [{"id": "C1", "status": "PASS", "evidence": [], "note": ""}],
+         "docs": [], "impact": [], "threads": [], "unresolved_questions": []}))
+
+    monkeypatch.setenv("DSH_SESSION_ROOT", str(tmp_path))
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "k")
+    monkeypatch.setattr("src.run.gh_available", lambda: True)
+
+    assert main(["demo/app", "7", "--skip-human", "--no-post"]) == 0
+    out = capsys.readouterr().out
+    assert "[1/5] snapshot — 1 files, 1 commits" in out
+    assert "[2/5] claims — 1 claims from description" in out
+    assert "[5/5] report — 1 claims, 0 docs, 0 impact" in out
