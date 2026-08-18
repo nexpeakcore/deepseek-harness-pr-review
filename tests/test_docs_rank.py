@@ -69,3 +69,13 @@ def test_rank_docs_respects_top_n(tmp_path):
         _write(tmp_path, f"docs/d{i}.md", "payment.py")
     snapshot = {"files": [{"filename": "src/payment.py", "patch": ""}]}
     assert len(rank_docs(tmp_path, snapshot, top_n=5)) == 5
+
+
+def test_published_html_guides_are_ranked(tmp_path):
+    _write(tmp_path, "docs/guide/stale-docs.html", "<p>calls retry_payment</p>")
+    _write(tmp_path, "site/generated.html", "retry_payment")
+    snapshot = {"files": [{"filename": "src/payment.py",
+                           "patch": "@@\n+def retry_payment(n):"}]}
+    paths = [r["path"] for r in rank_docs(tmp_path, snapshot)]
+    assert "docs/guide/stale-docs.html" in paths
+    assert "site/generated.html" not in paths   # generated output, not authored prose

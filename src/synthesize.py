@@ -62,11 +62,16 @@ def _overall_verdict(findings: dict, claims: list[dict] | None = None) -> str:
     statuses = [c["status"] for c in findings.get("claims", [])]
     if not statuses:
         return "NO CLAIMS"
+    # A claims agent that died takes its shard's verdicts with it. Those claims
+    # were never checked, so they weigh exactly as much as UNVERIFIED — without
+    # this, a review that lost a third of its claims and passed the rest still
+    # reported ACCURATE, which is the one thing the verdict must never do.
+    missing = max(0, len(claims or []) - len(statuses))
     if all_inferred(claims):
         return "INCONSISTENT" if any(s == "FAIL" for s in statuses) else "NO DESCRIPTION"
     if any(s == "FAIL" for s in statuses):
         return "CONTRADICTED"
-    if any(s in ("PARTIAL", "UNVERIFIED") for s in statuses):
+    if missing or any(s in ("PARTIAL", "UNVERIFIED") for s in statuses):
         return "PARTIAL"
     return "ACCURATE"
 
@@ -87,7 +92,10 @@ def verdict_label(verdict: str, findings: dict,
     total = max(len(statuses), len(claims or []))
     noun = "claim" if total == 1 else "claims"
     fails = sum(1 for s in statuses if s == "FAIL")
-    unproven = sum(1 for s in statuses if s in ("PARTIAL", "UNVERIFIED"))
+    # Claims whose agent died never came back with a status; they are unproven
+    # in the only sense that matters — nobody looked at them.
+    unproven = (sum(1 for s in statuses if s in ("PARTIAL", "UNVERIFIED"))
+                + max(0, total - len(statuses)))
     return {
         "ACCURATE": f"All {total} {noun} verified",
         "PARTIAL": f"{unproven} of {total} {noun} unproven",

@@ -15,11 +15,14 @@ import re
 from pathlib import Path
 
 # No .txt: in practice it is requirements.txt and SOURCES.txt, never prose.
-DOC_SUFFIXES = (".md", ".mdx", ".rst", ".adoc")
+# .html is included because published guides live there (docs/guide/*.html);
+# generated HTML is excluded by SKIP_DIRS, not by suffix.
+DOC_SUFFIXES = (".md", ".mdx", ".rst", ".adoc", ".html")
 SKIP_DIRS = {
     ".git", ".hg", ".svn", "node_modules", "venv", ".venv", "env",
     "__pycache__", ".pytest_cache", ".mypy_cache", ".tox", "dist", "build",
     "target", "vendor", ".next", ".nuxt", "coverage", "sessions", ".agent-slots",
+    "site", "_site", "public", "htmlcov",
 }
 # Generated trees that carry no authored prose but do carry matching names.
 SKIP_DIR_SUFFIXES = (".egg-info", ".dist-info")

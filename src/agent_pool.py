@@ -40,8 +40,23 @@ def max_agents() -> int:
     return max(1, min(value, MAX_AGENTS_CAP))
 
 
+def default_root() -> Path:
+    """Where the slot files live when no caller names a directory.
+
+    Not the CWD: a manual `python -m src.run` started from another directory
+    would then keep its own private pool and the cap would silently stop being
+    global — the one property it exists for. The install directory is stable no
+    matter where the process was launched from. HARNESS_SLOT_ROOT overrides it
+    for setups that share one API quota across several checkouts.
+    """
+    override = os.environ.get("HARNESS_SLOT_ROOT")
+    if override:
+        return Path(override)
+    return Path(__file__).resolve().parent.parent
+
+
 def slot_dir(root: Path | None = None) -> Path:
-    return (root or Path.cwd()) / SLOT_DIR_NAME
+    return (root or default_root()) / SLOT_DIR_NAME
 
 
 def _reclaimable(path: Path) -> bool:

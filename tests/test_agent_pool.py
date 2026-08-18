@@ -74,3 +74,23 @@ def test_release_of_a_vanished_slot_is_not_an_error(tmp_path):
     slot = acquire_slot("a", limit=1, root=tmp_path)
     slot.unlink()
     release_slot(slot)  # must not raise
+
+
+def test_default_root_does_not_follow_the_working_directory(tmp_path, monkeypatch):
+    """A cap rooted at CWD is not global — a run from elsewhere gets its own pool."""
+    from src.agent_pool import default_root
+
+    monkeypatch.delenv("HARNESS_SLOT_ROOT", raising=False)
+    monkeypatch.chdir(tmp_path)
+    here = default_root()
+    monkeypatch.chdir(tmp_path.parent)
+    assert default_root() == here
+    assert (here / "src" / "agent_pool.py").exists()
+
+
+def test_slot_root_can_be_overridden(tmp_path, monkeypatch):
+    from src.agent_pool import default_root, slot_dir
+
+    monkeypatch.setenv("HARNESS_SLOT_ROOT", str(tmp_path))
+    assert default_root() == tmp_path
+    assert slot_dir() == tmp_path / ".agent-slots"

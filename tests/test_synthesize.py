@@ -401,3 +401,19 @@ def test_verdict_label_denominator_survives_a_dead_claims_shard():
     assert verdict_label("CONTRADICTED", returned, planned) == "1 of 23 claims contradicted"
     # Without the planned list it can only report what it saw.
     assert verdict_label("CONTRADICTED", returned) == "1 of 15 claims contradicted"
+
+
+def test_a_dead_claims_shard_can_never_read_as_accurate():
+    """The verdict must not call a review accurate on claims nobody checked."""
+    from src.synthesize import _overall_verdict, verdict_label
+
+    planned = [{"id": f"C{i}", "source": "stated"} for i in range(1, 24)]
+    survived = {"claims": [{"id": f"C{i}", "status": "PASS"} for i in range(1, 16)]}
+
+    verdict = _overall_verdict(survived, planned)
+    assert verdict == "PARTIAL"
+    assert verdict_label(verdict, survived, planned) == "8 of 23 claims unproven"
+
+    # All claims back and passing is still, correctly, accurate.
+    whole = {"claims": [{"id": f"C{i}", "status": "PASS"} for i in range(1, 24)]}
+    assert _overall_verdict(whole, planned) == "ACCURATE"
