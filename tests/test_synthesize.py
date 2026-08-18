@@ -388,3 +388,16 @@ def test_report_and_comment_agree_on_the_verdict_text(tmp_path):
     assert label == "1 of 2 claims contradicted"
     assert label in build_report(SNAPSHOT, claims, findings, [], tmp_path)
     assert label in build_comment(SNAPSHOT, claims, findings, [])
+
+
+def test_verdict_label_denominator_survives_a_dead_claims_shard():
+    """A shard that died must not shrink the denominator into a rosier ratio."""
+    from src.synthesize import verdict_label
+
+    planned = [{"id": f"C{i}", "source": "stated"} for i in range(1, 24)]
+    # Only the first shard came back; the second agent failed.
+    returned = {"claims": [{"id": f"C{i}", "status": "PASS"} for i in range(1, 15)]
+                          + [{"id": "C15", "status": "FAIL"}]}
+    assert verdict_label("CONTRADICTED", returned, planned) == "1 of 23 claims contradicted"
+    # Without the planned list it can only report what it saw.
+    assert verdict_label("CONTRADICTED", returned) == "1 of 15 claims contradicted"

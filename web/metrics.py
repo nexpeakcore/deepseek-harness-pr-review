@@ -110,7 +110,7 @@ def pr_record(session_root: Path, owner: str, repo: str, n: int) -> dict | None:
         # Rendered once here so the dashboard and the PR comment can never
         # disagree about what a verdict says.
         "verdict_label": verdict_label(
-            _overall_verdict(findings, claims_json), findings),
+            _overall_verdict(findings, claims_json), findings, claims_json),
         "inferred": all_inferred(claims_json),
         "claims_total": len(claims),
         "bugs": sum(1 for c in claims

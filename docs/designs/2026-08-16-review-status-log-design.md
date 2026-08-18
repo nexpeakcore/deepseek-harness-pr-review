@@ -37,8 +37,10 @@ in the UI instead of a bare error alert.
 
 ## Part 3 — Per-PR review log
 
-- `trigger_review` redirects stdout/stderr (`contextlib.redirect_stdout/
-  redirect_stderr`) into `session_dir/review.log` while `run.main` executes
+- `trigger_review` runs the review through `review_proc.run_review`, a separate
+  process whose stdout/stderr go straight to `session_dir/review.log`. It used
+  to redirect the interpreter's own streams in-process, which made two
+  concurrent reviews impossible — `sys.stdout` is global
 - Web-triggered reviews write it; poller runs in its own process (autoreview.log),
   UI only shows review.log when present
 

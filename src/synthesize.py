@@ -71,14 +71,20 @@ def _overall_verdict(findings: dict, claims: list[dict] | None = None) -> str:
     return "ACCURATE"
 
 
-def verdict_label(verdict: str, findings: dict) -> str:
+def verdict_label(verdict: str, findings: dict,
+                  claims: list[dict] | None = None) -> str:
     """Human-facing verdict text, carrying the proportion behind it.
 
     A bare label hides the difference between 1 wrong claim out of 23 and 20 out
     of 23 — the reader needs the ratio to know whether to skim or to stop.
+
+    The denominator comes from the claims that were *planned*, not the verdicts
+    that came back: a claims agent that dies takes its shard's verdicts with it,
+    and counting only survivors would quietly shrink the denominator and
+    overstate how much of the description was checked.
     """
     statuses = [c.get("status") for c in findings.get("claims", [])]
-    total = len(statuses)
+    total = max(len(statuses), len(claims or []))
     noun = "claim" if total == 1 else "claims"
     fails = sum(1 for s in statuses if s == "FAIL")
     unproven = sum(1 for s in statuses if s in ("PARTIAL", "UNVERIFIED"))
@@ -109,7 +115,7 @@ def build_report(snapshot: dict, claims: list[dict], findings: dict,
         "",
         f"- Author: {snapshot['author']} | Base: {snapshot['base']} → Head: {snapshot['head']}",
         f"- Files changed: {len(snapshot['files'])} | Commits: {len(snapshot['commits'])}",
-        f"## Verdict: {verdict_label(verdict, findings)}",
+        f"## Verdict: {verdict_label(verdict, findings, claims)}",
         "",
     ]
     if inferred:
@@ -271,7 +277,7 @@ def build_comment(snapshot: dict, claims: list[dict], findings: dict,
     verdict = _overall_verdict(findings, claims)
     inferred = all_inferred(claims)
     v_color = VERDICT_COLOR.get(verdict, "#6b7280")
-    v_text = verdict_label(verdict, findings)
+    v_text = verdict_label(verdict, findings, claims)
 
     # Claims table: id, text, category, status, evidence, note
     text_by_id = {cl.get("id"): cl for cl in claims}
@@ -363,7 +369,7 @@ def build_ping(snapshot: dict, findings: dict, rounds: int | None = None,
     """
     c = summary_counts(findings)
     when = completed_at or time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime())
-    verdict = verdict_label(_overall_verdict(findings, claims), findings)
+    verdict = verdict_label(_overall_verdict(findings, claims), findings, claims)
     st = c["by_status"]
     breakdown = ", ".join(
         f"{n} {STATUS_LABELS[k].lower()}"

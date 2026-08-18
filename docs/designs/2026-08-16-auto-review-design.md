@@ -67,8 +67,9 @@ autoreview.log          # per-run log (auto-created)
 `build_snapshot` stores `head_sha` (from `meta.head.sha`). Old snapshots without
 `head_sha` are treated as never-reviewed (re-review once — safe over missing).
 
-Re-review: delete `findings.json`, `answers.json`, `report.md`, `agent-log.txt`
-from the session dir, then call `run.main([..., "--force"])` so all 5 phases run
+Re-review: delete `findings.json`, `answers.json`, `report.md` and every
+`agent-log*.txt` (verify fans out one agent per axis, so there is one log per
+agent, not one per review) from the session dir, then call `run.main([..., "--force"])` so all 5 phases run
 fresh with the new head. `post_comment` is already idempotent (updates the single
 marked comment), so re-review never spams.
 
@@ -124,6 +125,12 @@ server's, so a review that dies is correctly seen as dead.
 
 - `max_parallel` (default `1`, cap `8`) — reviews running at once in one pass.
   `1` keeps the old strictly-sequential behaviour.
+- `max_agents` (default `4`, cap `16`) — concurrent model agents across the
+  whole system, not per review. Each review fans out one agent per axis and
+  shards claims past 15, so in-flight calls are `max_parallel × agents per
+  review` — a product neither side can see alone. Enforced by lock files in
+  `.agent-slots/` (`src/agent_pool.py`) and passed to review subprocesses as
+  `HARNESS_MAX_AGENTS`, so the poller and a manual CLI run share one budget.
 - A pass plans every repo first (sequential `gh` calls, cheap), then fans the
   queued PRs out through a `ThreadPoolExecutor`. Threads are fine because the
   work is a blocked `subprocess.run`, not Python.

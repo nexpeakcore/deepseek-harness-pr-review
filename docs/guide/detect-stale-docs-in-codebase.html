@@ -47,8 +47,12 @@ doc automatically.</p>
 </ul>
 
 <h2>How the check works</h2>
-<p>When a PR changes code, the review agent finds the docs that reference the
-changed areas and reads them side by side with the real code:</p>
+<p>When a PR changes code, the docs most likely invalidated are ranked first —
+scored against the diff by path proximity, by the symbols the diff declares, and
+by which changed filenames they mention — and a dedicated docs agent verifies
+that ranked list against the code. The ranking is a starting point, not a limit:
+the agent still reports a doc it finds outside the list. Each candidate is read
+side by side with the real code:</p>
 <pre><code># example findings
 docs/API.md      → STALE      "Documents email/password login only;
                                 the code now has an idToken branch"

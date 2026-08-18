@@ -258,3 +258,52 @@ def test_run_verify_ignores_last_rounds_part_files(tmp_path):
     findings = run_verify({"model": "m"}, ws, sd, SNAP, _claims(1),
                           runner=_fake_runner(PAYLOADS, fail=("docs",)))
     assert findings["docs"] == []
+
+
+def _concurrency_probe(payloads, hold=0.15):
+    """Runner that records how many agents were in flight at once."""
+    import threading
+    import time
+
+    state = {"live": 0, "peak": 0}
+    lock = threading.Lock()
+
+    def runner(cfg, workspace, session_dir, task):
+        with lock:
+            state["live"] += 1
+            state["peak"] = max(state["peak"], state["live"])
+        time.sleep(hold)
+        with lock:
+            state["live"] -= 1
+        (workspace / task["out"]).write_text(
+            json.dumps({k: payloads.get(k, []) for k in task["keys"]}))
+        return "log"
+
+    return runner, state
+
+
+def test_axes_actually_run_in_parallel(tmp_path, monkeypatch):
+    """The point of fan-out: the axes must overlap, not queue behind each other."""
+    monkeypatch.setenv("HARNESS_MAX_AGENTS", "4")
+    monkeypatch.chdir(tmp_path)          # keep .agent-slots out of the repo
+    ws, sd = tmp_path / "ws", tmp_path / "sd"
+    ws.mkdir()
+
+    runner, state = _concurrency_probe({"unresolved_questions": []})
+    tasks = plan_tasks(SNAP, _claims(20), [])
+    assert len(tasks) == 4               # claims-1, claims-2, docs, impact
+
+    run_verify({"model": "m"}, ws, sd, SNAP, _claims(20), runner=runner)
+    assert state["peak"] == 4
+
+
+def test_global_cap_throttles_the_fan_out(tmp_path, monkeypatch):
+    """max_agents is a system-wide budget, so it must bound one review too."""
+    monkeypatch.setenv("HARNESS_MAX_AGENTS", "2")
+    monkeypatch.chdir(tmp_path)
+    ws, sd = tmp_path / "ws", tmp_path / "sd"
+    ws.mkdir()
+
+    runner, state = _concurrency_probe({"unresolved_questions": []})
+    run_verify({"model": "m"}, ws, sd, SNAP, _claims(20), runner=runner)
+    assert state["peak"] == 2

@@ -19,6 +19,8 @@ interval_minutes: 10
 post_comment: true
 skip_human: true
 drafts: false
+max_parallel: 1                 # PRs reviewed at once per pass (cap 8)
+max_agents: 4                   # concurrent agents system-wide, not per review (cap 16)
 repos:
   sample-app: auto
   sample-api: auto
