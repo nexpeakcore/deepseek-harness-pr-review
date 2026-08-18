@@ -16,6 +16,7 @@ from src.autoreview_config import auto_repos, list_repos, load_config, \
     remove_repo, set_repo_mode
 from src.config import load_config as load_env_config
 from src.gh import gh_available, run_gh
+from src.review_proc import review_lock_alive
 
 CONFIG_PATH = Path("autoreview.yml")
 LOCK_PATH = Path("autoreview.lock")
@@ -200,9 +201,17 @@ def run_pass(cfg: dict, session_root: Path, dry_run: bool = False,
                 dispatched += 1
                 continue
             session_dir = session_root / owner / repo / f"pr-{n}"
-            if (session_dir / "review.lock").exists():
-                print(f"SKIP {owner}/{repo}#{n}: manual review running")
-                continue
+            lock = session_dir / "review.lock"
+            if lock.exists():
+                if review_lock_alive(lock):
+                    print(f"SKIP {owner}/{repo}#{n}: manual review running")
+                    continue
+                # Lock chết: review trước bị kill (timeout) hoặc crash. Skip ở
+                # đây sẽ treo PR vĩnh viễn vì không ai dọn hộ — poller là
+                # đường duy nhất chạm tới nó. Cứ dispatch; _acquire_review_lock
+                # trong tiến trình con mới là nơi thu hồi lock.
+                print(f"STALE-LOCK {owner}/{repo}#{n}: previous review died, "
+                      f"retrying")
             if plan["decision"] == "RE-RUN":
                 _clean_rerun_session(session_dir)
             print(line)
