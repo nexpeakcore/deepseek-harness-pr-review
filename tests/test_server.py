@@ -548,3 +548,58 @@ def test_pr_page_never_reviewed_still_says_not_reviewed(tmp_path, monkeypatch):
     assert resp.status_code == 200
     assert "Not reviewed yet" in resp.text
     assert "Failed · interrupted" not in resp.text
+
+
+def _config_client(tmp_path, monkeypatch, body):
+    cfg_path = tmp_path / "autoreview.yml"
+    cfg_path.write_text(body)
+    monkeypatch.setenv("AUTOREVIEW_CONFIG", str(cfg_path))
+    monkeypatch.setenv("DSH_SESSION_ROOT", str(tmp_path / "sessions"))
+    monkeypatch.setattr("src.gh.run_gh", lambda args, **kw: [])
+    return TestClient(app), cfg_path
+
+
+def test_repo_page_does_not_claim_auto_from_another_owners_bare_key(tmp_path, monkeypatch):
+    """/repos/nexpeakcore/erp must not read `erp: auto`, which means sample-org/erp."""
+    client, _ = _config_client(
+        tmp_path, monkeypatch,
+        "org: sample-org\ndefault_mode: manual\nrepos:\n  erp: auto\n")
+
+    html = client.get("/repos/nexpeakcore/erp").text
+    assert "MANUAL (default)" in html
+
+    assert "AUTO" in client.get("/repos/sample-org/erp").text
+
+
+def test_toggling_mode_from_a_repo_page_targets_that_owner(tmp_path, monkeypatch):
+    from src.autoreview_config import load_config as load_acfg
+
+    client, cfg_path = _config_client(
+        tmp_path, monkeypatch, "org: sample-org\nrepos:\n  erp: auto\n")
+
+    r = client.post("/api/config/repos/nexpeakcore%2Ferp/mode", json={"mode": "auto"})
+    assert r.status_code == 200
+    repos = load_acfg(cfg_path)["repos"]
+    # The other owner's entry is untouched; a new, explicit one is created.
+    assert repos == {"erp": "auto", "nexpeakcore/erp": "auto"}
+
+
+def test_config_routes_accept_owner_slash_repo_keys(tmp_path, monkeypatch):
+    """Config keys contain slashes; a single-segment route 404'd on all of them."""
+    from src.autoreview_config import load_config as load_acfg
+
+    client, cfg_path = _config_client(
+        tmp_path, monkeypatch,
+        "org: sample-org\nrepos:\n  nexpeakcore/erp-desktop: auto\n  erp: auto\n")
+
+    r = client.post("/api/config/repos/nexpeakcore%2Ferp-desktop/mode",
+                    json={"mode": "manual"})
+    assert r.status_code == 200
+    assert load_acfg(cfg_path)["repos"]["nexpeakcore/erp-desktop"] == "manual"
+
+    assert client.delete("/api/config/repos/nexpeakcore%2Ferp-desktop").status_code == 200
+    assert "nexpeakcore/erp-desktop" not in load_acfg(cfg_path)["repos"]
+
+    # Bare keys keep working.
+    assert client.delete("/api/config/repos/erp").status_code == 200
+    assert load_acfg(cfg_path)["repos"] == {}

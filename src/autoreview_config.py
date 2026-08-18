@@ -84,12 +84,44 @@ def _write_atomic(path: Path, cfg: dict) -> None:
     os.replace(tmp, path)
 
 
+def repo_mode(cfg: dict, owner: str, repo: str) -> str | None:
+    """Configured mode for owner/repo, or None if it is not configured.
+
+    A bare key like `erp` means `<org>/erp` and nothing else. Matching it
+    against any owner made the dashboard show AUTO for nexpeakcore/erp on the
+    strength of a `erp: auto` entry that auto_repos() resolves to sample-org/erp
+    — a different repo the poller would never review.
+    """
+    full = f"{owner}/{repo}"
+    if full in cfg.get("repos", {}):
+        return cfg["repos"][full]
+    if cfg.get("org") and cfg["org"] == owner:
+        return cfg["repos"].get(repo)
+    return None
+
+
+def resolve_key(cfg: dict, name: str) -> str:
+    """The key in cfg['repos'] that `name` refers to, existing or to be created.
+
+    Keeps an edit on owner/repo from creating a duplicate entry when the same
+    repo is already configured under its bare name.
+    """
+    repos = cfg.get("repos", {})
+    if name in repos:
+        return name
+    if "/" in name:
+        owner, _, repo = name.partition("/")
+        if cfg.get("org") and cfg["org"] == owner and repo in repos:
+            return repo
+    return name
+
+
 def set_repo_mode(path: Path, repo: str, mode: str) -> dict:
     """Add or change mode for a repo. Returns the updated config."""
     if mode not in ("auto", "manual"):
         raise ValueError(f"mode must be auto|manual: {mode!r}")
     cfg = load_config(path)
-    cfg["repos"][repo] = mode
+    cfg["repos"][resolve_key(cfg, repo)] = mode
     _write_atomic(path, cfg)
     return cfg
 

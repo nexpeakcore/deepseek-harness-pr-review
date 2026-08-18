@@ -10,6 +10,7 @@ from fastapi.templating import Jinja2Templates
 
 from src.autoreview_config import load_config as load_autoreview_config
 from src.autoreview_config import auto_repos, list_repos, remove_repo, set_repo_mode
+from src.autoreview_config import repo_mode as config_repo_mode
 from src.config import load_config
 from src.review_proc import EXIT_TIMEOUT, run_review
 from web import metrics
@@ -110,13 +111,9 @@ def repo_page(request: Request, owner: str, repo: str):
             from src.autoreview_config import load_config as load_acfg
 
             acfg = load_acfg(cfg_path)
-            org = acfg.get("org", "")
-            key = repo if "/" in repo else f"{owner}/{repo}"
-            repo_mode = acfg["repos"].get(key) or acfg["repos"].get(repo)
-            if repo_mode is None and org and org == owner:
-                repo_mode = acfg["repos"].get(repo)
-            if repo_mode is not None:
-                mode_configured = True
+            configured = config_repo_mode(acfg, owner, repo)
+            if configured is not None:
+                repo_mode, mode_configured = configured, True
             else:
                 repo_mode = acfg.get("default_mode", "manual")
         except (ValueError, OSError):
@@ -209,7 +206,7 @@ def api_config():
     }
 
 
-@app.post("/api/config/repos/{repo}/mode")
+@app.post("/api/config/repos/{repo:path}/mode")
 def api_set_mode(repo: str, payload: dict):
     path = _config_path()
     if not path.exists():
@@ -244,7 +241,7 @@ def api_add_repo(payload: dict):
     return {"ok": True, "repo": repo}
 
 
-@app.delete("/api/config/repos/{repo}")
+@app.delete("/api/config/repos/{repo:path}")
 def api_remove_repo(repo: str):
     path = _config_path()
     if not path.exists():

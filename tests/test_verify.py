@@ -3,6 +3,17 @@ import subprocess
 
 import pytest
 
+
+@pytest.fixture(autouse=True)
+def isolated_agent_slots(tmp_path, monkeypatch):
+    """Give every test its own agent-slot pool.
+
+    The pool is deliberately rooted at the install directory rather than the
+    CWD, so chdir does not isolate it: without this the suite draws from the
+    same budget as a running review and either throttles or blocks on it.
+    """
+    monkeypatch.setenv("HARNESS_SLOT_ROOT", str(tmp_path / "slots"))
+
 from src.verify import (build_claims_prompt, build_docs_prompt,
                         build_impact_prompt, parse_findings, setup_workspace)
 
@@ -285,7 +296,6 @@ def _concurrency_probe(payloads, hold=0.15):
 def test_axes_actually_run_in_parallel(tmp_path, monkeypatch):
     """The point of fan-out: the axes must overlap, not queue behind each other."""
     monkeypatch.setenv("HARNESS_MAX_AGENTS", "4")
-    monkeypatch.chdir(tmp_path)          # keep .agent-slots out of the repo
     ws, sd = tmp_path / "ws", tmp_path / "sd"
     ws.mkdir()
 
@@ -300,7 +310,6 @@ def test_axes_actually_run_in_parallel(tmp_path, monkeypatch):
 def test_global_cap_throttles_the_fan_out(tmp_path, monkeypatch):
     """max_agents is a system-wide budget, so it must bound one review too."""
     monkeypatch.setenv("HARNESS_MAX_AGENTS", "2")
-    monkeypatch.chdir(tmp_path)
     ws, sd = tmp_path / "ws", tmp_path / "sd"
     ws.mkdir()
 

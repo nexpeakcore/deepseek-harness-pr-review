@@ -174,3 +174,59 @@ def test_max_agents_travels_to_the_review_subprocess(tmp_path, monkeypatch):
     run_review("o", "r", 1, session_root=tmp_path,
                log_path=tmp_path / "l.log", max_agents=6)
     assert seen["HARNESS_MAX_AGENTS"] == "6"
+
+
+def test_bare_key_belongs_to_the_configured_org_only():
+    """`erp: auto` means <org>/erp — not every owner's repo called erp.
+
+    The dashboard used to fall back to a bare-name lookup with no owner check,
+    so /repos/nexpeakcore/erp showed AUTO on the strength of an entry that
+    auto_repos() resolves to sample-org/erp — a repo the poller never touches.
+    """
+    from src.autoreview_config import repo_mode
+
+    cfg = {"org": "sample-org", "repos": {"erp": "auto",
+                                          "nexpeakcore/erp-desktop": "manual"}}
+    assert repo_mode(cfg, "sample-org", "erp") == "auto"
+    assert repo_mode(cfg, "nexpeakcore", "erp") is None
+    assert repo_mode(cfg, "nexpeakcore", "erp-desktop") == "manual"
+    assert repo_mode(cfg, "other", "nothing") is None
+
+
+def test_bare_key_matches_nothing_when_no_org_is_set():
+    from src.autoreview_config import repo_mode
+
+    cfg = {"org": "", "repos": {"erp": "auto"}}
+    assert repo_mode(cfg, "anyone", "erp") is None
+
+
+def test_repo_mode_agrees_with_auto_repos():
+    """The badge and the poller must not disagree about what is auto."""
+    from src.autoreview_config import auto_repos, repo_mode
+
+    cfg = {"org": "sample-org",
+           "repos": {"erp": "auto", "nexpeakcore/api": "auto", "x": "manual"}}
+    for owner, repo in auto_repos(cfg):
+        assert repo_mode(cfg, owner, repo) == "auto"
+    assert repo_mode(cfg, "nexpeakcore", "erp") is None
+    assert ("nexpeakcore", "erp") not in auto_repos(cfg)
+
+
+def test_set_mode_updates_the_bare_key_instead_of_duplicating(tmp_path):
+    from src.autoreview_config import load_config, set_repo_mode
+
+    path = tmp_path / "autoreview.yml"
+    path.write_text("org: sample-org\nrepos:\n  erp: auto\n")
+    set_repo_mode(path, "sample-org/erp", "manual")
+    repos = load_config(path)["repos"]
+    assert repos == {"erp": "manual"}          # no second entry for the same repo
+
+
+def test_set_mode_for_another_owner_creates_its_own_key(tmp_path):
+    from src.autoreview_config import load_config, set_repo_mode
+
+    path = tmp_path / "autoreview.yml"
+    path.write_text("org: sample-org\nrepos:\n  erp: auto\n")
+    set_repo_mode(path, "nexpeakcore/erp", "auto")
+    repos = load_config(path)["repos"]
+    assert repos == {"erp": "auto", "nexpeakcore/erp": "auto"}

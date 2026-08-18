@@ -94,3 +94,25 @@ def test_slot_root_can_be_overridden(tmp_path, monkeypatch):
     monkeypatch.setenv("HARNESS_SLOT_ROOT", str(tmp_path))
     assert default_root() == tmp_path
     assert slot_dir() == tmp_path / ".agent-slots"
+
+
+def test_a_real_review_and_a_test_run_can_be_kept_apart(tmp_path, monkeypatch):
+    """HARNESS_SLOT_ROOT exists so a test suite never draws on the live budget.
+
+    The pool is rooted at the install directory on purpose — a cap tied to the
+    CWD is not global — which also means chdir cannot isolate anything from it.
+    """
+    from src.agent_pool import acquire_slot, default_root
+
+    production = tmp_path / "prod"
+    monkeypatch.setenv("HARNESS_SLOT_ROOT", str(production))
+    assert default_root() == production
+
+    # Fill the "production" pool completely.
+    held = [acquire_slot(f"live-{i}", limit=2) for i in range(2)]
+    assert len(held) == 2
+
+    # A different root is unaffected by it.
+    monkeypatch.setenv("HARNESS_SLOT_ROOT", str(tmp_path / "isolated"))
+    free = acquire_slot("test", limit=2, timeout=0)
+    assert free.parent.parent == tmp_path / "isolated"

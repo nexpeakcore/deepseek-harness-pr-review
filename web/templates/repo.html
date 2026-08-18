@@ -9,7 +9,7 @@
   <button class="tab-btn review-btn mode-toggle"
           onclick="toggleMode(this)"
           data-mode="{{ repo.mode }}"
-          data-owner="{{ repo.owner }}" data-repo="{{ repo.repo }}"
+          data-owner="{{ repo.owner }}" data-repo="{{ repo.owner }}/{{ repo.repo }}"
           {% if repo.mode == 'auto' %}data-next="manual"{% else %}data-next="auto"{% endif %}>
     Switch to {% if repo.mode == 'auto' %}MANUAL{% else %}AUTO{% endif %}
   </button>
