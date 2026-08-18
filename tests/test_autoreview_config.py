@@ -177,27 +177,27 @@ def test_max_agents_travels_to_the_review_subprocess(tmp_path, monkeypatch):
 
 
 def test_bare_key_belongs_to_the_configured_org_only():
-    """`erp: auto` means <org>/erp — not every owner's repo called erp.
+    """`api: auto` means <org>/api — not every owner's repo called api.
 
     The dashboard used to fall back to a bare-name lookup with no owner check,
-    so /repos/nexpeakcore/erp showed AUTO on the strength of an entry that
-    auto_repos() resolves to sample-org/erp — a repo the poller never touches.
+    so /repos/acme/api showed AUTO on the strength of an entry that
+    auto_repos() resolves to sample-org/api — a repo the poller never touches.
     """
     from src.autoreview_config import repo_mode
 
-    cfg = {"org": "sample-org", "repos": {"erp": "auto",
-                                          "nexpeakcore/erp-desktop": "manual"}}
-    assert repo_mode(cfg, "sample-org", "erp") == "auto"
-    assert repo_mode(cfg, "nexpeakcore", "erp") is None
-    assert repo_mode(cfg, "nexpeakcore", "erp-desktop") == "manual"
+    cfg = {"org": "sample-org", "repos": {"api": "auto",
+                                          "acme/billing": "manual"}}
+    assert repo_mode(cfg, "sample-org", "api") == "auto"
+    assert repo_mode(cfg, "acme", "api") is None
+    assert repo_mode(cfg, "acme", "billing") == "manual"
     assert repo_mode(cfg, "other", "nothing") is None
 
 
 def test_bare_key_matches_nothing_when_no_org_is_set():
     from src.autoreview_config import repo_mode
 
-    cfg = {"org": "", "repos": {"erp": "auto"}}
-    assert repo_mode(cfg, "anyone", "erp") is None
+    cfg = {"org": "", "repos": {"api": "auto"}}
+    assert repo_mode(cfg, "anyone", "api") is None
 
 
 def test_repo_mode_agrees_with_auto_repos():
@@ -205,28 +205,28 @@ def test_repo_mode_agrees_with_auto_repos():
     from src.autoreview_config import auto_repos, repo_mode
 
     cfg = {"org": "sample-org",
-           "repos": {"erp": "auto", "nexpeakcore/api": "auto", "x": "manual"}}
+           "repos": {"api": "auto", "acme/billing": "auto", "x": "manual"}}
     for owner, repo in auto_repos(cfg):
         assert repo_mode(cfg, owner, repo) == "auto"
-    assert repo_mode(cfg, "nexpeakcore", "erp") is None
-    assert ("nexpeakcore", "erp") not in auto_repos(cfg)
+    assert repo_mode(cfg, "acme", "api") is None
+    assert ("acme", "api") not in auto_repos(cfg)
 
 
 def test_set_mode_updates_the_bare_key_instead_of_duplicating(tmp_path):
     from src.autoreview_config import load_config, set_repo_mode
 
     path = tmp_path / "autoreview.yml"
-    path.write_text("org: sample-org\nrepos:\n  erp: auto\n")
-    set_repo_mode(path, "sample-org/erp", "manual")
+    path.write_text("org: sample-org\nrepos:\n  api: auto\n")
+    set_repo_mode(path, "sample-org/api", "manual")
     repos = load_config(path)["repos"]
-    assert repos == {"erp": "manual"}          # no second entry for the same repo
+    assert repos == {"api": "manual"}          # no second entry for the same repo
 
 
 def test_set_mode_for_another_owner_creates_its_own_key(tmp_path):
     from src.autoreview_config import load_config, set_repo_mode
 
     path = tmp_path / "autoreview.yml"
-    path.write_text("org: sample-org\nrepos:\n  erp: auto\n")
-    set_repo_mode(path, "nexpeakcore/erp", "auto")
+    path.write_text("org: sample-org\nrepos:\n  api: auto\n")
+    set_repo_mode(path, "acme/api", "auto")
     repos = load_config(path)["repos"]
-    assert repos == {"erp": "auto", "nexpeakcore/erp": "auto"}
+    assert repos == {"api": "auto", "acme/api": "auto"}

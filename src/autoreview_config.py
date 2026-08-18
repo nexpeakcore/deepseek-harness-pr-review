@@ -87,9 +87,9 @@ def _write_atomic(path: Path, cfg: dict) -> None:
 def repo_mode(cfg: dict, owner: str, repo: str) -> str | None:
     """Configured mode for owner/repo, or None if it is not configured.
 
-    A bare key like `erp` means `<org>/erp` and nothing else. Matching it
-    against any owner made the dashboard show AUTO for nexpeakcore/erp on the
-    strength of a `erp: auto` entry that auto_repos() resolves to sample-org/erp
+    A bare key like `api` means `<org>/api` and nothing else. Matching it
+    against any owner made the dashboard show AUTO for acme/api on the
+    strength of a `api: auto` entry that auto_repos() resolves to sample-org/api
     — a different repo the poller would never review.
     """
     full = f"{owner}/{repo}"

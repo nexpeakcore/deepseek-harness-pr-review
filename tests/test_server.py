@@ -586,10 +586,10 @@ def test_add_repo_refuses_one_github_cannot_see(tmp_path, monkeypatch):
 
 def test_add_repo_accepts_a_reachable_one(tmp_path, monkeypatch):
     client, cfg_path = _cfg_client(tmp_path, monkeypatch, _gh_with_missing([]))
-    r = client.post("/api/config/repos", json={"repo": "nexpeakcore/erp"})
+    r = client.post("/api/config/repos", json={"repo": "acme/api"})
     assert r.status_code == 200
     assert r.json()["warning"] is None
-    assert load_config(cfg_path)["repos"]["nexpeakcore/erp"] == "auto"
+    assert load_config(cfg_path)["repos"]["acme/api"] == "auto"
 
 
 def test_add_repo_survives_an_unverifiable_check(tmp_path, monkeypatch):
@@ -649,28 +649,28 @@ def test_repo_check_results_are_cached_until_rechecked(tmp_path, monkeypatch):
 
 
 def test_repo_page_does_not_claim_auto_from_another_owners_bare_key(tmp_path, monkeypatch):
-    """/repos/nexpeakcore/erp must not read `erp: auto`, which means sample-org/erp."""
+    """/repos/acme/api must not read `api: auto`, which means sample-org/api."""
     client, _ = _cfg_client(
         tmp_path, monkeypatch, lambda args, **kw: [],
-        "org: sample-org\ndefault_mode: manual\nrepos:\n  erp: auto\n")
+        "org: sample-org\ndefault_mode: manual\nrepos:\n  api: auto\n")
 
-    html = client.get("/repos/nexpeakcore/erp").text
+    html = client.get("/repos/acme/api").text
     assert "MANUAL (default)" in html
 
-    assert "AUTO" in client.get("/repos/sample-org/erp").text
+    assert "AUTO" in client.get("/repos/sample-org/api").text
 
 
 def test_toggling_mode_from_a_repo_page_targets_that_owner(tmp_path, monkeypatch):
     from src.autoreview_config import load_config as load_acfg
 
     client, cfg_path = _cfg_client(
-        tmp_path, monkeypatch, lambda args, **kw: [], "org: sample-org\nrepos:\n  erp: auto\n")
+        tmp_path, monkeypatch, lambda args, **kw: [], "org: sample-org\nrepos:\n  api: auto\n")
 
-    r = client.post("/api/config/repos/nexpeakcore%2Ferp/mode", json={"mode": "auto"})
+    r = client.post("/api/config/repos/acme%2Fapi/mode", json={"mode": "auto"})
     assert r.status_code == 200
     repos = load_acfg(cfg_path)["repos"]
     # The other owner's entry is untouched; a new, explicit one is created.
-    assert repos == {"erp": "auto", "nexpeakcore/erp": "auto"}
+    assert repos == {"api": "auto", "acme/api": "auto"}
 
 
 def test_config_routes_accept_owner_slash_repo_keys(tmp_path, monkeypatch):
@@ -679,16 +679,16 @@ def test_config_routes_accept_owner_slash_repo_keys(tmp_path, monkeypatch):
 
     client, cfg_path = _cfg_client(
         tmp_path, monkeypatch, lambda args, **kw: [],
-        "org: sample-org\nrepos:\n  nexpeakcore/erp-desktop: auto\n  erp: auto\n")
+        "org: sample-org\nrepos:\n  acme/billing: auto\n  api: auto\n")
 
-    r = client.post("/api/config/repos/nexpeakcore%2Ferp-desktop/mode",
+    r = client.post("/api/config/repos/acme%2Fbilling/mode",
                     json={"mode": "manual"})
     assert r.status_code == 200
-    assert load_acfg(cfg_path)["repos"]["nexpeakcore/erp-desktop"] == "manual"
+    assert load_acfg(cfg_path)["repos"]["acme/billing"] == "manual"
 
-    assert client.delete("/api/config/repos/nexpeakcore%2Ferp-desktop").status_code == 200
-    assert "nexpeakcore/erp-desktop" not in load_acfg(cfg_path)["repos"]
+    assert client.delete("/api/config/repos/acme%2Fbilling").status_code == 200
+    assert "acme/billing" not in load_acfg(cfg_path)["repos"]
 
     # Bare keys keep working.
-    assert client.delete("/api/config/repos/erp").status_code == 200
+    assert client.delete("/api/config/repos/api").status_code == 200
     assert load_acfg(cfg_path)["repos"] == {}
