@@ -10,6 +10,7 @@ A subprocess gets its own stdout, its own module-level globals, and — because
 the review. In-process runs recorded the *web server's* PID, so a review that
 died inside a live server still looked alive to `review_process_info` forever.
 """
+import json
 import os
 import subprocess
 import sys
@@ -19,6 +20,32 @@ from pathlib import Path
 # review that ran and failed on its own terms.
 EXIT_TIMEOUT = 124  # same convention as timeout(1)
 EXIT_SPAWN_FAILED = 125
+
+
+def review_lock_alive(lock: Path) -> bool:
+    """True if review.lock records a PID that is still running.
+
+    Missing, corrupt or unparseable lock, or a PID that no longer exists →
+    stale. A PID owned by another user raises PermissionError from
+    kill(pid, 0), which means the process IS alive.
+
+    Shared by run.py (which reclaims stale locks on acquire) and autoreview.py
+    (which must not skip a PR whose lock is stale) so the two can never
+    disagree about what "a review is running" means.
+    """
+    try:
+        pid = int(json.loads(lock.read_text()).get("pid", 0))
+    except (ValueError, OSError, AttributeError):
+        return False
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
 
 
 def build_argv(owner: str, repo: str, n: int, *, force: bool = True,

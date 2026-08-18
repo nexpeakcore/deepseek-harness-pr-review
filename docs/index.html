@@ -29,7 +29,8 @@ ul { padding-left: 22px; font-size: 15px; }
 li { margin: 8px 0; }
 .guide-list a { font-size: 15px; display: block; margin: 10px 0; }
 .guide-list small { color: #8b949e; display: block; font-size: 13px; }
-img { max-width: 100%; margin: 16px 0 4px; border: 1px solid #e5e5e5; }
+img { max-width: 100%; height: auto; margin: 16px 0 4px; border: 1px solid #e5e5e5; }
+.caption { font-size: 14px; color: #57606a; margin: 0 0 24px; }
 figcaption { font-size: 12px; color: #8b949e; }
 hr { border: none; border-top: 1px solid #e5e5e5; margin: 36px 0; }
 footer { margin-top: 40px; font-size: 13px; color: #8b949e; }
@@ -52,6 +53,17 @@ inconsistent. This tool runs a <a href="https://deepseek.com/harness/en/">DeepSe
 agent that deep-dives into the actual code of every pull request and tells you
 whether the description matches reality — with <code>file:line</code> evidence
 for every claim.</p>
+
+<p>
+  <a href="screenshots/dashboard-demo.png">
+    <img src="screenshots/dashboard-demo.png" width="2000" height="1015"
+         alt="PR review dashboard showing each claim from a PR description checked against real code with file:line evidence"
+         loading="lazy">
+  </a>
+</p>
+<p class="caption">The tool reviewing its own pull request. Each sentence of the
+description becomes a numbered claim with <code>file:line</code> evidence, and
+the header reports what it found rather than what the author claimed.</p>
 
 <h2>What it does</h2>
 <ul>

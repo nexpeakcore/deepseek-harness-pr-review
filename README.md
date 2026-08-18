@@ -25,10 +25,15 @@ inconsistent. This tool runs a DeepSeek Harness agent that:
 
 ## Demo
 
-[![Dashboard demo](docs/screenshots/dashboard-demo.png)](docs/screenshots/dashboard-demo.png)
+[![Dashboard: PR review with claim-by-claim evidence](docs/screenshots/dashboard-demo.png)](docs/screenshots/dashboard-demo.png)
 
-Dashboard: per-repo KPIs, verdict distribution, and every open PR with review
-status. Live demo data is included — see [Web dashboard](#web-dashboard).
+The tool reviewing its own PR #9. Every sentence of the description became a
+numbered claim, each checked against the real code with `file:line` evidence —
+and the header is honest about what it found: description partial, 2 risks,
+2 stale docs. Tabs split claims, docs, requirement impact and review threads.
+
+Repo-level pages (KPIs, verdict distribution, every open PR with review status)
+and live demo data are included — see [Web dashboard](#web-dashboard).
 
 ## Features
 

@@ -11,6 +11,7 @@ from pathlib import Path
 
 from src.config import load_config
 from src.gh import gh_available, run_gh
+from src.review_proc import review_lock_alive
 from src.human_gate import run_gate
 from src.synthesize import build_comment, build_report, post_comment
 from src.verify import run_verify, setup_workspace
@@ -125,30 +126,6 @@ def _review_lock_path(session_dir: Path) -> Path:
     return session_dir / "review.lock"
 
 
-def _review_lock_alive(lock: Path) -> bool:
-    """True if review.lock records a PID that is still running.
-
-    Corrupt/unparseable lock, or a PID that no longer exists → stale. A PID
-    owned by another user raises PermissionError from kill(pid, 0), which
-    means the process IS alive — same rule as web/metrics.review_process_info.
-    """
-    import os as _os
-
-    try:
-        pid = int(json.loads(lock.read_text()).get("pid", 0))
-    except (ValueError, OSError, AttributeError):
-        return False
-    if pid <= 0:
-        return False
-    try:
-        _os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
-
-
 def _acquire_review_lock(session_dir: Path) -> bool:
     """Create the per-PR review lock (JSON {pid, started_at}).
 
@@ -171,7 +148,7 @@ def _acquire_review_lock(session_dir: Path) -> bool:
         try:
             fd = _os.open(lock, _os.O_CREAT | _os.O_EXCL | _os.O_WRONLY)
         except FileExistsError:
-            if attempt == 2 or _review_lock_alive(lock):
+            if attempt == 2 or review_lock_alive(lock):
                 return False
             print("[harness] reclaiming stale review.lock (PID dead — "
                   "previous review crashed)", file=sys.stderr)

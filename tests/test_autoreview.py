@@ -145,7 +145,9 @@ def test_run_pass_skips_manual_review_lock(tmp_path, monkeypatch, capsys):
     cfg = load_config(cfg_path)
     lock = root / "sample-org" / "sample-api" / "pr-1" / "review.lock"
     lock.parent.mkdir(parents=True)
-    lock.touch()
+    # PID sống = review đang thật sự chạy (đúng thứ run.py ghi ra)
+    lock.write_text(json.dumps({"pid": os.getpid(),
+                                "started_at": "2026-08-18T00:00:00"}))
 
     dispatched = []
     monkeypatch.setattr("src.autoreview._dispatch",
@@ -391,3 +393,58 @@ def test_run_pass_parallel_counts_only_successes(tmp_path, monkeypatch):
 
     monkeypatch.setattr("src.autoreview._dispatch", fake_dispatch)
     assert run_pass(cfg, root, dry_run=False, gh=fake_gh) == 1
+
+
+def test_run_pass_reclaims_stale_review_lock(tmp_path, monkeypatch, capsys):
+    """Review trước bị kill (timeout/crash) → lock chết KHÔNG được skip.
+
+    Poller là đường duy nhất chạm tới PR đó; skip trên lock chết sẽ treo PR
+    vĩnh viễn. Tiến trình con mới là nơi thu hồi lock.
+    """
+    root = tmp_path / "sessions"
+    root.mkdir(parents=True)
+    cfg_path = tmp_path / "autoreview.yml"
+    cfg_path.write_text("org: sample-org\nrepos:\n  sample-api: auto\n")
+    cfg = load_config(cfg_path)
+
+    dead = os.fork()
+    if dead == 0:
+        os._exit(0)
+    os.waitpid(dead, 0)
+
+    lock = root / "sample-org" / "sample-api" / "pr-1" / "review.lock"
+    lock.parent.mkdir(parents=True)
+    lock.write_text(json.dumps({"pid": dead, "started_at": "2026-08-18T00:00:00"}))
+
+    dispatched = []
+    monkeypatch.setattr("src.autoreview._dispatch",
+                        lambda c, o, r, n, sha: (dispatched.append((o, r, n)) or 0))
+    count = run_pass(cfg, root, dry_run=False,
+                     gh=lambda args, **kw: [{"number": 1, "head": {"sha": "a"},
+                                             "draft": False}])
+    assert count == 1
+    assert dispatched == [("sample-org", "sample-api", 1)]
+    out = capsys.readouterr().out
+    assert "STALE-LOCK" in out
+    assert "manual review running" not in out
+
+
+def test_run_pass_skips_corrupt_review_lock_as_stale(tmp_path, monkeypatch):
+    """review.lock rác cũng là stale — không được treo PR."""
+    root = tmp_path / "sessions"
+    root.mkdir(parents=True)
+    cfg_path = tmp_path / "autoreview.yml"
+    cfg_path.write_text("org: sample-org\nrepos:\n  sample-api: auto\n")
+    cfg = load_config(cfg_path)
+
+    lock = root / "sample-org" / "sample-api" / "pr-1" / "review.lock"
+    lock.parent.mkdir(parents=True)
+    lock.write_text("not json")
+
+    dispatched = []
+    monkeypatch.setattr("src.autoreview._dispatch",
+                        lambda c, o, r, n, sha: (dispatched.append(n) or 0))
+    assert run_pass(cfg, root, dry_run=False,
+                    gh=lambda args, **kw: [{"number": 1, "head": {"sha": "a"},
+                                            "draft": False}]) == 1
+    assert dispatched == [1]
