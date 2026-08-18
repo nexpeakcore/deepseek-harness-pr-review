@@ -6,11 +6,23 @@ from pathlib import Path
 from src.gh import run_gh as _default_gh
 
 
-def _get_threads(owner: str, repo: str, n: int, gh) -> list[dict]:
+ISSUE_BODY_MAX = 4000
+
+
+def _pr_graphql(owner: str, repo: str, n: int, gh) -> tuple[list[dict], list[dict]]:
+    """One round trip for review threads + linked issues.
+
+    Linked issues are an intent signal: when a PR ships with no usable
+    description, the issue it closes is usually the only written statement of
+    what the change is supposed to do (see src/claims.py).
+    """
     query = """
     query($owner:String!,$repo:String!,$pr:Int!){
       repository(owner:$owner,name:$repo){
         pullRequest(number:$pr){
+          closingIssuesReferences(first:10){
+            nodes{ number title body }
+          }
           reviewThreads(first:100){
             nodes{
               isResolved
@@ -40,6 +52,7 @@ def _get_threads(owner: str, repo: str, n: int, gh) -> list[dict]:
     pr = (payload["data"] or {}).get("repository", {}).get("pullRequest")
     if pr is None:
         raise RuntimeError(f"graphql: pullRequest #{n} not found (owner={owner}, repo={repo})")
+
     nodes = (pr.get("reviewThreads") or {}).get("nodes") or []
     threads = []
     truncated = len(nodes) == 100
@@ -58,7 +71,16 @@ def _get_threads(owner: str, repo: str, n: int, gh) -> list[dict]:
             })
     if truncated:
         print("[snapshot] warning: review threads truncated at 100 — snapshot data incomplete", file=sys.stderr)
-    return threads
+
+    issues = []
+    for node in (pr.get("closingIssuesReferences") or {}).get("nodes") or []:
+        body = node.get("body") or ""
+        issues.append({
+            "number": node.get("number"),
+            "title": node.get("title") or "",
+            "body": body[:ISSUE_BODY_MAX],
+        })
+    return threads, issues
 
 
 def build_snapshot(owner: str, repo: str, n: int, session_dir: Path,
@@ -67,7 +89,7 @@ def build_snapshot(owner: str, repo: str, n: int, session_dir: Path,
     meta = gh([f"api", f"repos/{owner}/{repo}/pulls/{n}"])
     files = gh([f"api", f"repos/{owner}/{repo}/pulls/{n}/files", "--paginate"])
     commits = gh([f"api", f"repos/{owner}/{repo}/pulls/{n}/commits", "--paginate"])
-    threads = _get_threads(owner, repo, n, gh)
+    threads, linked_issues = _pr_graphql(owner, repo, n, gh)
 
     snapshot = {
         "owner": owner,
@@ -95,6 +117,7 @@ def build_snapshot(owner: str, repo: str, n: int, session_dir: Path,
             for c in commits
         ],
         "threads": threads,
+        "linked_issues": linked_issues,
     }
 
     session_dir.mkdir(parents=True, exist_ok=True)

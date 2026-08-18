@@ -38,12 +38,14 @@
   <a class="gh-link" target="_blank" rel="noopener"
      href="https://github.com/{{ repo_owner }}/{{ repo_name }}/pull/{{ detail.pr.pr }}">Open on GitHub ↗</a></h1>
 <p class="muted">{{ detail.pr.author }} · {{ detail.pr.base }} → {{ detail.pr.head }}</p>
-<span class="verdict v-{{ detail.pr.verdict|lower }}">{{
-  {'ACCURATE': 'Description accurate', 'PARTIAL': 'Description partial',
-   'MISLEADING': 'Description misleading', 'NO_CLAIMS': 'No claims'}.get(
-      detail.pr.verdict, detail.pr.verdict) }}</span>
+<span class="verdict v-{{ detail.pr.verdict|lower }}">{{ detail.pr.verdict_label }}</span>
 <span class="verdict v-fail">Risks found: {{ detail.pr.bugs }}</span>
 <span class="verdict v-wrong">Doc errors: {{ detail.pr.doc_errors }}</span>
+{% if detail.pr.inferred %}
+<p class="muted breakdown">This PR has no usable description. The claims below
+  were reconstructed from the code, commits and linked issues, then verified
+  against the code for internal consistency.</p>
+{% endif %}
 <p class="muted breakdown">
   {% set b = detail.pr.bug_breakdown %}
   Risks = {{ b.claims_fail }} FAIL claim{{ 's' if b.claims_fail != 1 }}
@@ -67,7 +69,8 @@
     <tbody>
     {% for c in detail.claims %}
       <tr>
-        <td><b>{{ c.id }}</b> {{ c.text }}</td>
+        <td><b>{{ c.id }}</b> {{ c.text }}
+          {% if c.source == 'inferred' %}<span class="verdict v-inferred">inferred</span>{% endif %}</td>
         <td>{{ c.category }}</td>
         <td><span class="verdict v-{{ c.status|lower }}">{{ c.status }}</span></td>
         <td class="muted">{{ c.evidence|join(", ") }}</td>

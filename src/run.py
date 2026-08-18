@@ -114,7 +114,8 @@ def _write_failed_report(session_dir: Path, error: Exception) -> None:
 
 
 def _post_round_ping(owner: str, repo: str, num: int, snapshot: dict,
-                     findings: dict, session_dir: Path) -> None:
+                     findings: dict, session_dir: Path,
+                     claims: list[dict] | None = None) -> None:
     """Post the short per-round comment. Never fails the review.
 
     The full report comment is edited in place and GitHub notifies nobody about
@@ -127,7 +128,8 @@ def _post_round_ping(owner: str, repo: str, num: int, snapshot: dict,
         post_ping(owner, repo, num,
                   build_ping(snapshot, findings,
                              rounds=_read_rounds(session_dir),
-                             report_url=(report or {}).get("html_url")))
+                             report_url=(report or {}).get("html_url"),
+                             claims=claims))
         print("Posted round ping.")
     except (RuntimeError, OSError) as e:
         print(f"warning: could not post round ping: {e}", file=sys.stderr)
@@ -370,7 +372,7 @@ def main(argv: list[str] | None = None) -> int:
             print("Comment exists — updated with full report.")
         if not args.no_ping:
             _post_round_ping(owner, repo, int(num), snapshot, findings,
-                             session_dir)
+                             session_dir, claims)
         return 0
     except (RuntimeError, ValueError, OSError) as e:
         print(f"Error: {e}", file=sys.stderr)

@@ -143,3 +143,34 @@ def test_ping_comment_defaults_on(tmp_path):
     path = tmp_path / "autoreview.yml"
     path.write_text("org: o\nrepos:\n  a: auto\n")
     assert load_config(path)["ping_comment"] is True
+
+
+def test_max_agents_defaults_and_validates(tmp_path):
+    from src import agent_pool
+    from src.autoreview_config import DEFAULTS, load_config, validate_config
+
+    path = tmp_path / "autoreview.yml"
+    path.write_text("repos: {}\n")
+    assert load_config(path)["max_agents"] == agent_pool.DEFAULT_MAX_AGENTS
+
+    for bad in (0, -1, agent_pool.MAX_AGENTS_CAP + 1, "4", True, None):
+        with pytest.raises(ValueError, match="max_agents"):
+            validate_config({**DEFAULTS, "repos": {}, "max_agents": bad})
+
+
+def test_max_agents_travels_to_the_review_subprocess(tmp_path, monkeypatch):
+    from src.review_proc import run_review
+
+    seen = {}
+
+    def fake_run(cmd, **kw):
+        seen.update(kw["env"])
+
+        class P:
+            returncode = 0
+        return P()
+
+    monkeypatch.setattr("review_proc.subprocess.run", fake_run)
+    run_review("o", "r", 1, session_root=tmp_path,
+               log_path=tmp_path / "l.log", max_agents=6)
+    assert seen["HARNESS_MAX_AGENTS"] == "6"

@@ -4,9 +4,11 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-from src.synthesize import _overall_verdict
+from src.claims import all_inferred
+from src.synthesize import _overall_verdict, verdict_label
 
-VERDICTS = ("ACCURATE", "PARTIAL", "MISLEADING", "NO_CLAIMS")
+VERDICTS = ("ACCURATE", "PARTIAL", "CONTRADICTED", "NO_CLAIMS",
+            "NO_DESCRIPTION", "INCONSISTENT")
 REQUIRED_FILES = ("snapshot.json", "findings.json")
 
 
@@ -24,6 +26,10 @@ def _read_json(path: Path) -> dict | None:
 
 
 def _read_json_list(path: Path) -> list:
+    # An absent optional artifact (claims.json on an old session) is not a
+    # corruption — only warn about files that exist and fail to parse.
+    if not path.exists():
+        return []
     try:
         data = json.loads(path.read_text())
         return data if isinstance(data, list) else []
@@ -88,6 +94,9 @@ def pr_record(session_root: Path, owner: str, repo: str, n: int) -> dict | None:
         errors="replace").startswith("# Review FAILED")
 
     claims = findings.get("claims", [])
+    # claims.json carries the provenance (stated vs inferred) that decides
+    # which verdict scale applies; findings.json only carries statuses.
+    claims_json = _read_json_list(session_dir / "claims.json")
     docs = findings.get("docs", [])
     impact = findings.get("impact", [])
 
@@ -97,7 +106,12 @@ def pr_record(session_root: Path, owner: str, repo: str, n: int) -> dict | None:
         "author": snapshot.get("author", ""),
         "base": snapshot.get("base", ""),
         "head": snapshot.get("head", ""),
-        "verdict": _verdict_key(_overall_verdict(findings)),
+        "verdict": _verdict_key(_overall_verdict(findings, claims_json)),
+        # Rendered once here so the dashboard and the PR comment can never
+        # disagree about what a verdict says.
+        "verdict_label": verdict_label(
+            _overall_verdict(findings, claims_json), findings),
+        "inferred": all_inferred(claims_json),
         "claims_total": len(claims),
         "bugs": sum(1 for c in claims
                     if c.get("status") in ("FAIL", "PARTIAL"))
@@ -143,7 +157,7 @@ def repo_record(session_root: Path, owner: str, repo: str) -> dict | None:
     verdict_count = {v: 0 for v in VERDICTS}
     for r in prs:
         if not r["failed"]:
-            verdict_count[r["verdict"]] += 1
+            verdict_count[r["verdict"]] = verdict_count.get(r["verdict"], 0) + 1
     return {
         "owner": owner,
         "repo": repo,
@@ -173,6 +187,7 @@ def pr_detail(session_root: Path, owner: str, repo: str, n: int) -> dict | None:
             "id": fc.get("id", ""),
             "text": base.get("text", ""),
             "category": base.get("category", ""),
+            "source": base.get("source", "stated"),
             "status": fc.get("status", ""),
             "evidence": fc.get("evidence", []),
             "note": fc.get("note", ""),

@@ -13,6 +13,12 @@ max_parallel: 1              # PRs reviewed at once per pass (1 = sequential, ma
                              # Each review is its own process; the real ceiling is
                              # your model API concurrency, not CPU.
 review_timeout_minutes: 30   # kill a hung review so it can't hold a slot forever
+max_agents: 4                # concurrent model agents across the WHOLE system, not
+                             # per review. Each review fans out one agent per axis
+                             # (claims / docs / impact) and shards claims past 15,
+                             # so in-flight calls = max_parallel x agents per review.
+                             # Enforced by lock files, so every review process and
+                             # every manual CLI run shares the one budget. Max 16.
 repos:
   your-repo: auto            # auto-review this repo's PRs
   another-repo: manual       # skip in poller; review via CLI/UI

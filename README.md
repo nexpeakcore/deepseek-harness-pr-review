@@ -15,6 +15,10 @@ inconsistent. This tool runs a DeepSeek Harness agent that:
 
 - **Verifies PR descriptions claim-by-claim** — each sentence of the
   description is checked against the actual code, with `file:line` evidence
+- **Reviews PRs that have no description at all** — the ones that need it most.
+  Intent is reconstructed from commits, branch name, labels, the linked issue
+  and the diff, then the code is checked against its own implied intent:
+  unexplained scope creep, behaviour changes with no test or doc
 - **Detects stale and fabricated docs** — up to 60% of repo docs are wrong;
   the agent compares them against real code (`MATCH / STALE / WRONG /
   FABRICATED`)
@@ -40,9 +44,12 @@ and live demo data are included — see [Web dashboard](#web-dashboard).
 | | |
 |---|---|
 | ✅ **Claim verification** | PR description split into verifiable claims, each checked against code with evidence |
+| ✅ **No-description fallback** | PR with an empty or boilerplate body: claims are reconstructed from commits, branch, labels, linked issue and the diff, then checked for internal consistency — and the reconstruction is posted back as the description the author should have written |
 | ✅ **Docs reality-check** | Docs compared to real code: `MATCH / STALE / WRONG / FABRICATED` |
 | ✅ **Requirement impact** | `CHANGED / BROKEN / RISK` analysis per business requirement |
 | ✅ **Human-in-the-loop** | ≤20-word confirmation questions only when uncertain — no guessing |
+| ✅ **Parallel agents** | One agent per review axis (claims / docs / impact), claims sharded past 15 — so a 40-claim PR cannot starve the docs check. Concurrency is capped globally across every review process |
+| ✅ **Ranked doc targets** | Docs are scored against the diff (path proximity, changed symbols, file mentions) before any agent runs — the agent verifies a bounded, reproducible list instead of grepping the repo |
 | ✅ **Auto review poller** | Reviews new PRs automatically, re-reviews when the head commit changes |
 | ✅ **Web dashboard** | Repo config management, review triggers (Review now), live review logs, metrics: risks found, doc errors, verdicts, review rounds per repo |
 | ✅ **Idempotent PR comments** | One English comment per PR, updated in place — never duplicated |
@@ -188,7 +195,7 @@ the repo's auto-review config (skip-human + post-comment flags from
 
 **Demo data** is checked into `sessions/demo/app/` — start the server and open
 http://127.0.0.1:6789/repos/demo/app/pr/7 for a sample review (PR #8 shows a
-MISLEADING verdict + FABRICATED doc), useful for screenshots and documentation.
+a CONTRADICTED verdict + FABRICATED doc), useful for screenshots and documentation.
 
 ## Auto review
 

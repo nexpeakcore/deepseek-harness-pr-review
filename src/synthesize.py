@@ -2,6 +2,7 @@
 import time
 from pathlib import Path
 
+from src.claims import all_inferred
 from src.gh import run_gh
 
 MARKER = "<!-- harness-pr-review -->"
@@ -44,30 +45,86 @@ def summary_counts(findings: dict) -> dict:
     }
 
 
-def _overall_verdict(findings: dict) -> str:
+def _overall_verdict(findings: dict, claims: list[dict] | None = None) -> str:
+    """The description axis of the review.
+
+    CONTRADICTED, not "misleading": the verdict names what was measured — a
+    claim the code contradicts — and nothing about the author's intent or the
+    description's overall quality. One wrong claim out of twenty trips it, so a
+    word implying the whole description is bad would itself be misleading. The
+    proportion lives in verdict_label(), which every surface shows.
+
+    When claims were inferred from the code (the PR had no usable description),
+    this scale does not apply — there is no description to be accurate about —
+    so those PRs get their own two verdicts. INCONSISTENT is the loud one: the
+    code contradicts what the code itself implies.
+    """
     statuses = [c["status"] for c in findings.get("claims", [])]
     if not statuses:
         return "NO CLAIMS"
+    if all_inferred(claims):
+        return "INCONSISTENT" if any(s == "FAIL" for s in statuses) else "NO DESCRIPTION"
     if any(s == "FAIL" for s in statuses):
-        return "MISLEADING"
+        return "CONTRADICTED"
     if any(s in ("PARTIAL", "UNVERIFIED") for s in statuses):
         return "PARTIAL"
     return "ACCURATE"
 
 
+def verdict_label(verdict: str, findings: dict) -> str:
+    """Human-facing verdict text, carrying the proportion behind it.
+
+    A bare label hides the difference between 1 wrong claim out of 23 and 20 out
+    of 23 — the reader needs the ratio to know whether to skim or to stop.
+    """
+    statuses = [c.get("status") for c in findings.get("claims", [])]
+    total = len(statuses)
+    noun = "claim" if total == 1 else "claims"
+    fails = sum(1 for s in statuses if s == "FAIL")
+    unproven = sum(1 for s in statuses if s in ("PARTIAL", "UNVERIFIED"))
+    return {
+        "ACCURATE": f"All {total} {noun} verified",
+        "PARTIAL": f"{unproven} of {total} {noun} unproven",
+        "CONTRADICTED": f"{fails} of {total} {noun} contradicted",
+        "NO CLAIMS": "No claims",
+        "NO DESCRIPTION": f"No description — {total} {noun} inferred from code",
+        "INCONSISTENT": (f"No description — {fails} of {total} inferred "
+                         f"{noun} contradicted"),
+    }.get(verdict, verdict)
+
+
+def _suggested_description(claims: list[dict]) -> list[str]:
+    """The description the author should have written, as bullets."""
+    return [f"- {c.get('text', '')}" for c in claims if c.get("text")]
+
+
 def build_report(snapshot: dict, claims: list[dict], findings: dict,
                  answers: list[dict], session_dir: Path) -> str:
     """Write report.md. Returns the report content."""
-    verdict = _overall_verdict(findings)
+    verdict = _overall_verdict(findings, claims)
+    inferred = all_inferred(claims)
     text_by_id = {cl["id"]: cl.get("text", "") for cl in claims}
     lines = [
         f"# Review PR #{snapshot['pr']} — {snapshot['title']}",
         "",
         f"- Author: {snapshot['author']} | Base: {snapshot['base']} → Head: {snapshot['head']}",
         f"- Files changed: {len(snapshot['files'])} | Commits: {len(snapshot['commits'])}",
-        f"## Verdict: {verdict}",
+        f"## Verdict: {verdict_label(verdict, findings)}",
         "",
-        "## Claims",
+    ]
+    if inferred:
+        lines += [
+            "> This PR has no usable description. The claims below were "
+            "reconstructed from the code, commits and linked issues, then "
+            "verified against the code for internal consistency.",
+            "",
+            "## Suggested description",
+            "",
+            *_suggested_description(claims),
+            "",
+        ]
+    lines += [
+        "## Claims" + (" (inferred from code)" if inferred else ""),
         "",
         "| Claim | Content | Status | Evidence | Notes |",
         "|---|---|---|---|---|",
@@ -107,11 +164,13 @@ def build_report(snapshot: dict, claims: list[dict], findings: dict,
     return report
 
 
-VERDICT_BADGE = {
-    "ACCURATE": ("#27ae60", "Description accurate"),
-    "PARTIAL": ("#b9770e", "Description partial"),
-    "MISLEADING": ("#c0392b", "Description misleading"),
-    "NO CLAIMS": ("#6b7280", "No claims"),
+VERDICT_COLOR = {
+    "ACCURATE": "#27ae60",
+    "PARTIAL": "#b9770e",
+    "CONTRADICTED": "#c0392b",
+    "NO CLAIMS": "#6b7280",
+    "NO DESCRIPTION": "#b9770e",
+    "INCONSISTENT": "#c0392b",
 }
 STATUS_COLORS = {
     "MATCHES": "#27ae60", "PASS": "#27ae60", "RESOLVED": "#27ae60",
@@ -119,8 +178,10 @@ STATUS_COLORS = {
     "PARTIAL": "#b9770e", "STALE": "#b9770e", "STILL_VALID": "#b9770e",
     "RISK": "#b9770e", "CHANGED": "#b9770e", "OUTDATED": "#b9770e",
     "MISMATCH": "#c0392b", "FAIL": "#c0392b", "WRONG": "#c0392b",
+    "CONTRADICTED": "#c0392b",
     "FABRICATED": "#8e1c1c", "BROKEN": "#c0392b",
     "UNVERIFIED": "#6b7280", "NO_CLAIMS": "#6b7280",
+    "INFERRED": "#b9770e", "STATED": "#6b7280",
     "UNAFFECTED": "#6b7280",
 }
 
@@ -207,8 +268,10 @@ def build_comment(snapshot: dict, claims: list[dict], findings: dict,
 
     completed_at is injectable so tests get a deterministic body.
     """
-    verdict = _overall_verdict(findings)
-    v_color, v_text = VERDICT_BADGE.get(verdict, ("#6b7280", verdict))
+    verdict = _overall_verdict(findings, claims)
+    inferred = all_inferred(claims)
+    v_color = VERDICT_COLOR.get(verdict, "#6b7280")
+    v_text = verdict_label(verdict, findings)
 
     # Claims table: id, text, category, status, evidence, note
     text_by_id = {cl.get("id"): cl for cl in claims}
@@ -250,8 +313,17 @@ def build_comment(snapshot: dict, claims: list[dict], findings: dict,
     confirm_table = _summary_table(
         ["Question", "Answer"], confirm_rows, color_cols=set()) or "- none"
 
-    sections = [
-        _comment_section("Claims", "🟢", claims_table, open=True,
+    sections = []
+    if inferred:
+        sections.append(_comment_section(
+            "Suggested description", "📝",
+            "<p>This PR has no description. Reconstructed from the code — "
+            "please confirm or correct:</p>\n\n"
+            + "\n".join(_suggested_description(claims)),
+            open=True, count=len(claims)))
+    sections += [
+        _comment_section("Claims" + (" (inferred from code)" if inferred else ""),
+                         "🟢", claims_table, open=True,
                          count=len(findings.get("claims", []))),
         _comment_section("Docs vs reality", "📄", docs_table,
                          count=len(findings.get("docs", []))),
@@ -279,7 +351,8 @@ def build_comment(snapshot: dict, claims: list[dict], findings: dict,
 
 def build_ping(snapshot: dict, findings: dict, rounds: int | None = None,
                report_url: str | None = None,
-               completed_at: str | None = None) -> str:
+               completed_at: str | None = None,
+               claims: list[dict] | None = None) -> str:
     """Short per-round comment carrying the headline numbers.
 
     Exists purely to raise a notification. The full report lives in one comment
@@ -290,8 +363,7 @@ def build_ping(snapshot: dict, findings: dict, rounds: int | None = None,
     """
     c = summary_counts(findings)
     when = completed_at or time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime())
-    verdict = VERDICT_BADGE.get(_overall_verdict(findings),
-                                ("", _overall_verdict(findings)))[1]
+    verdict = verdict_label(_overall_verdict(findings, claims), findings)
     st = c["by_status"]
     breakdown = ", ".join(
         f"{n} {STATUS_LABELS[k].lower()}"

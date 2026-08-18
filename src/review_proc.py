@@ -68,7 +68,8 @@ def run_review(owner: str, repo: str, n: int, *, session_root: Path,
                log_path: Path, force: bool = True, skip_human: bool = True,
                no_post: bool = False, no_ping: bool = False,
                cwd: Path | None = None,
-               timeout_seconds: float | None = None) -> int:
+               timeout_seconds: float | None = None,
+               max_agents: int | None = None) -> int:
     """Run one review in its own process. Returns run.py's exit code.
 
     Output (stdout + stderr) goes straight to `log_path`; nothing about the
@@ -81,6 +82,10 @@ def run_review(owner: str, repo: str, n: int, *, session_root: Path,
     env = dict(os.environ)
     env["DSH_SESSION_ROOT"] = str(session_root)
     env["PYTHONUNBUFFERED"] = "1"  # log is tailed live by the dashboard
+    if max_agents is not None:
+        # The child fans out into several agents; the cap is global across all
+        # concurrent reviews, so it has to travel with the process.
+        env["HARNESS_MAX_AGENTS"] = str(max_agents)
 
     cmd = [sys.executable, "-m", "src.run",
            *build_argv(owner, repo, n, force=force, skip_human=skip_human,

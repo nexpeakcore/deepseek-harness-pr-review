@@ -140,8 +140,12 @@ def _release_lock() -> None:
 
 def _clean_rerun_session(session_dir: Path) -> None:
     """Xóa kết quả phase cũ trước khi re-review (giữ snapshot)."""
-    for name in ("findings.json", "answers.json", "report.md", "agent-log.txt"):
+    for name in ("findings.json", "answers.json", "report.md"):
         (session_dir / name).unlink(missing_ok=True)
+    # Một log cho mỗi agent kể từ khi verify fan-out; log của vòng trước mà
+    # còn lại sẽ khiến người đọc tưởng axis đó đã chạy trong vòng này.
+    for log in session_dir.glob("agent-log*.txt"):
+        log.unlink(missing_ok=True)
 
 
 def _dispatch(cfg: dict, owner: str, repo: str, n: int,
@@ -164,7 +168,8 @@ def _dispatch(cfg: dict, owner: str, repo: str, n: int,
         skip_human=cfg.get("skip_human", True),
         no_post=not cfg.get("post_comment", True),
         no_ping=not cfg.get("ping_comment", True),
-        timeout_seconds=cfg.get("review_timeout_minutes", 30) * 60)
+        timeout_seconds=cfg.get("review_timeout_minutes", 30) * 60,
+        max_agents=cfg.get("max_agents"))
 
 
 def run_pass(cfg: dict, session_root: Path, dry_run: bool = False,

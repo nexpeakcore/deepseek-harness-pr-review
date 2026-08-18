@@ -136,3 +136,58 @@ def test_build_snapshot_thread_truncation_warns(tmp_path, capsys):
     result = build_snapshot("demo", "app", 7, tmp_path, gh=_gh_fake(registry))
     assert len(result["threads"]) == 100
     assert "truncated" in capsys.readouterr().err
+
+
+LINKED = {
+    "data": {
+        "repository": {
+            "pullRequest": {
+                "closingIssuesReferences": {
+                    "nodes": [{"number": 12, "title": "Payments fail",
+                               "body": "One retry is not enough."}]
+                },
+                "reviewThreads": {"nodes": []},
+            }
+        }
+    }
+}
+
+
+def test_build_snapshot_captures_linked_issues(tmp_path):
+    registry = {
+        "repos/demo/app/pulls/7/commits": COMMITS,
+        "repos/demo/app/pulls/7/files": PR_FILES,
+        "repos/demo/app/pulls/7": PR_META,
+        "graphql": LINKED,
+    }
+    result = build_snapshot("demo", "app", 7, tmp_path, gh=_gh_fake(registry))
+    assert result["linked_issues"][0]["number"] == 12
+    assert result["linked_issues"][0]["body"] == "One retry is not enough."
+
+
+def test_build_snapshot_no_linked_issues(tmp_path):
+    registry = {
+        "repos/demo/app/pulls/7/commits": COMMITS,
+        "repos/demo/app/pulls/7/files": PR_FILES,
+        "repos/demo/app/pulls/7": PR_META,
+        "graphql": PR_THREADS,
+    }
+    result = build_snapshot("demo", "app", 7, tmp_path, gh=_gh_fake(registry))
+    assert result["linked_issues"] == []
+
+
+def test_build_snapshot_truncates_long_issue_body(tmp_path):
+    from src.snapshot import ISSUE_BODY_MAX
+
+    payload = {"data": {"repository": {"pullRequest": {
+        "closingIssuesReferences": {"nodes": [
+            {"number": 1, "title": "t", "body": "x" * (ISSUE_BODY_MAX + 500)}]},
+        "reviewThreads": {"nodes": []}}}}}
+    registry = {
+        "repos/demo/app/pulls/7/commits": COMMITS,
+        "repos/demo/app/pulls/7/files": PR_FILES,
+        "repos/demo/app/pulls/7": PR_META,
+        "graphql": payload,
+    }
+    result = build_snapshot("demo", "app", 7, tmp_path, gh=_gh_fake(registry))
+    assert len(result["linked_issues"][0]["body"]) == ISSUE_BODY_MAX

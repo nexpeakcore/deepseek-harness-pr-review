@@ -118,13 +118,13 @@ def test_no_claims_verdict(tmp_path):
     findings = {"claims": [], "docs": [], "impact": [], "threads": [],
                 "unresolved_questions": []}
     report = build_report(SNAPSHOT, [], findings, [], tmp_path)
-    assert "NO CLAIMS" in report
+    assert "No claims" in report
     comment = build_comment(SNAPSHOT, [], findings, [])
     assert "No claims" in comment
 
 
 def test_verdict_precedence():
-    assert _overall_verdict({"claims": [{"status": "PASS"}, {"status": "FAIL"}]}) == "MISLEADING"
+    assert _overall_verdict({"claims": [{"status": "PASS"}, {"status": "FAIL"}]}) == "CONTRADICTED"
     assert _overall_verdict({"claims": [{"status": "PASS"}, {"status": "UNVERIFIED"}]}) == "PARTIAL"
 
 
@@ -292,3 +292,99 @@ def test_post_comment_updates_report_not_ping():
                           list_comments=lambda: comments)
     assert posted is False
     assert "repos/demo/app/issues/comments/2" in seen[0][1]
+
+
+INFERRED_CLAIMS = [
+    {"id": "C1", "text": "Retries payments 5 times", "category": "bugfix",
+     "files": ["src/payment.py"], "docs": [], "source": "inferred"},
+]
+
+
+def test_inferred_claims_get_their_own_verdict():
+    passing = {"claims": [{"id": "C1", "status": "PASS"}]}
+    assert _overall_verdict(passing, INFERRED_CLAIMS) == "NO DESCRIPTION"
+
+    failing = {"claims": [{"id": "C1", "status": "FAIL"}]}
+    assert _overall_verdict(failing, INFERRED_CLAIMS) == "INCONSISTENT"
+
+    # A PARTIAL on inferred claims is still "no description", not "partial
+    # description" — there is no description to be partially right.
+    partial = {"claims": [{"id": "C1", "status": "PARTIAL"}]}
+    assert _overall_verdict(partial, INFERRED_CLAIMS) == "NO DESCRIPTION"
+
+
+def test_stated_claims_keep_the_old_scale():
+    stated = [{"id": "C1", "text": "x", "category": "feature", "source": "stated"}]
+    assert _overall_verdict({"claims": [{"status": "PASS"}]}, stated) == "ACCURATE"
+    assert _overall_verdict({"claims": [{"status": "FAIL"}]}, stated) == "CONTRADICTED"
+    # No claims argument at all (old callers) → unchanged behaviour.
+    assert _overall_verdict({"claims": [{"status": "PASS"}]}) == "ACCURATE"
+
+
+def test_report_offers_a_suggested_description(tmp_path):
+    findings = {"claims": [{"id": "C1", "status": "PASS", "evidence": [], "note": ""}],
+                "docs": [], "impact": [], "threads": [], "unresolved_questions": []}
+    report = build_report(SNAPSHOT, INFERRED_CLAIMS, findings, [], tmp_path)
+    assert "No description — 1 claim inferred from code" in report
+    assert "## Suggested description" in report
+    assert "- Retries payments 5 times" in report
+    assert "Claims (inferred from code)" in report
+
+
+def test_comment_offers_a_suggested_description():
+    findings = {"claims": [{"id": "C1", "status": "PASS", "evidence": [], "note": ""}],
+                "docs": [], "impact": [], "threads": [], "unresolved_questions": []}
+    comment = build_comment(SNAPSHOT, INFERRED_CLAIMS, findings, [])
+    assert "Suggested description" in comment
+    assert "No description — 1 claim inferred from code" in comment
+    assert "Retries payments 5 times" in comment
+
+    stated = build_comment(SNAPSHOT, CLAIMS, FINDINGS, ANSWERS)
+    assert "Suggested description" not in stated
+
+
+def test_ping_reports_the_inferred_verdict():
+    findings = {"claims": [{"id": "C1", "status": "FAIL"}], "docs": [],
+                "impact": [], "threads": [], "unresolved_questions": []}
+    ping = build_ping(SNAPSHOT, findings, completed_at="t", claims=INFERRED_CLAIMS)
+    assert "No description — 1 of 1 inferred claim contradicted" in ping
+
+
+def test_verdict_label_carries_the_proportion():
+    """One wrong claim out of 23 must not read like twenty out of 23."""
+    from src.synthesize import verdict_label
+
+    def findings(pass_n=0, fail=0, partial=0):
+        return {"claims": [{"status": "PASS"}] * pass_n
+                          + [{"status": "FAIL"}] * fail
+                          + [{"status": "PARTIAL"}] * partial}
+
+    assert verdict_label("CONTRADICTED", findings(22, 1)) == "1 of 23 claims contradicted"
+    assert verdict_label("CONTRADICTED", findings(3, 20)) == "20 of 23 claims contradicted"
+    assert verdict_label("ACCURATE", findings(23)) == "All 23 claims verified"
+    assert verdict_label("PARTIAL", findings(20, 0, 3)) == "3 of 23 claims unproven"
+    assert verdict_label("NO CLAIMS", findings()) == "No claims"
+
+
+def test_verdict_label_is_singular_for_one_claim():
+    from src.synthesize import verdict_label
+
+    one = {"claims": [{"status": "FAIL"}]}
+    assert verdict_label("CONTRADICTED", one) == "1 of 1 claim contradicted"
+    assert verdict_label("ACCURATE", {"claims": [{"status": "PASS"}]}) == "All 1 claim verified"
+
+
+def test_report_and_comment_agree_on_the_verdict_text(tmp_path):
+    """The dashboard, the comment and the report must never disagree."""
+    from web.metrics import _verdict_key  # noqa: F401  (key shape is separate)
+    from src.synthesize import _overall_verdict, verdict_label
+
+    findings = {"claims": [{"id": "C1", "status": "PASS", "evidence": [], "note": ""},
+                           {"id": "C2", "status": "FAIL", "evidence": [], "note": ""}],
+                "docs": [], "impact": [], "threads": [], "unresolved_questions": []}
+    claims = [{"id": "C1", "text": "a", "category": "feature", "source": "stated"},
+              {"id": "C2", "text": "b", "category": "feature", "source": "stated"}]
+    label = verdict_label(_overall_verdict(findings, claims), findings)
+    assert label == "1 of 2 claims contradicted"
+    assert label in build_report(SNAPSHOT, claims, findings, [], tmp_path)
+    assert label in build_comment(SNAPSHOT, claims, findings, [])

@@ -95,9 +95,9 @@ def repo_page(request: Request, owner: str, repo: str):
             raise HTTPException(status_code=404,
                                 detail="Repo not found")
         rec = {"owner": owner, "repo": repo, "prs_total": 0, "bugs_total": 0,
-               "doc_errors_total": 0, "verdict_count":
-                   {"ACCURATE": 0, "PARTIAL": 0, "MISLEADING": 0,
-                    "NO_CLAIMS": 0}, "prs": [], "has_data": False}
+               "doc_errors_total": 0,
+               "verdict_count": {v: 0 for v in metrics.VERDICTS},
+               "prs": [], "has_data": False}
     else:
         rec["has_data"] = True
 

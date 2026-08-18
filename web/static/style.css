@@ -98,10 +98,11 @@ tr.failed td { background: #fdecea; }
   background: #eef1f4; color: var(--gray);
 }
 .tag.unlisted, .v-unlisted { background: #f4f6f8; color: #a0a6ad; }
-.tag.draft, .v-partial, .v-wrong, .v-stale, .v-still_valid, .v-risk, .v-changed {
+.tag.draft, .v-partial, .v-wrong, .v-stale, .v-still_valid, .v-risk, .v-changed,
+.v-no_description, .v-inferred {
   background: #fdf6e3; color: var(--orange);
 }
-.tag.fail, .v-misleading, .v-fail, .v-fabricated, .v-broken { background: #fdecea; color: var(--red); }
+.tag.fail, .v-contradicted, .v-fail, .v-fabricated, .v-broken, .v-inconsistent { background: #fdecea; color: var(--red); }
 .verdict { margin-right: 4px; }
 
 /* ---------- buttons ---------- */

@@ -4,6 +4,8 @@ from pathlib import Path
 
 import yaml
 
+from src import agent_pool
+
 # Trần cứng cho max_parallel. Không phải giới hạn kỹ thuật mà là chặn tai nạn:
 # mỗi review là một agent gọi model, đặt nhầm 100 là đốt quota trong một pass.
 MAX_PARALLEL_CAP = 8
@@ -25,6 +27,11 @@ DEFAULTS = {
     "max_parallel": 1,
     # Một review treo không được giữ slot mãi khi chạy song song.
     "review_timeout_minutes": 30,
+    # Trần agent đồng thời trên TOÀN hệ thống, không phải mỗi review. Mỗi
+    # review fan-out nhiều agent, nên số call model thực tế là
+    # max_parallel × số agent — trần thật là API concurrency. src/agent_pool.py
+    # thực thi qua slot file nên nhiều tiến trình review cùng đếm một quỹ.
+    "max_agents": agent_pool.DEFAULT_MAX_AGENTS,
 }
 
 
@@ -64,6 +71,11 @@ def validate_config(cfg: dict) -> None:
     timeout = cfg.get("review_timeout_minutes")
     if not isinstance(timeout, int) or isinstance(timeout, bool) or timeout <= 0:
         raise ValueError("review_timeout_minutes must be a positive integer")
+    agents = cfg.get("max_agents")
+    if not isinstance(agents, int) or isinstance(agents, bool) \
+            or not 1 <= agents <= agent_pool.MAX_AGENTS_CAP:
+        raise ValueError(
+            f"max_agents must be an integer 1..{agent_pool.MAX_AGENTS_CAP}")
 
 
 def _write_atomic(path: Path, cfg: dict) -> None:

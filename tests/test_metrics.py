@@ -54,7 +54,7 @@ def test_pr_record_counts(tmp_path):
                    answers=[{"question": "q1", "kind": "doc", "answer": "SKIPPED"},
                             {"question": "q2", "kind": "claim", "answer": "y"}])
     rec = metrics.pr_record(tmp_path, "o", "r", 7)
-    assert rec["verdict"] == "MISLEADING"
+    assert rec["verdict"] == "CONTRADICTED"
     assert rec["bugs"] == 2            # 1 FAIL claim + 1 BROKEN impact
     assert rec["doc_errors"] == 2      # WRONG + FABRICATED
     assert rec["open_questions"] == 1  # only SKIPPED counted
@@ -95,7 +95,8 @@ def test_repo_record_aggregates(tmp_path):
     assert rec["bugs_total"] == 1
     assert rec["doc_errors_total"] == 0
     assert rec["verdict_count"] == {"ACCURATE": 0, "PARTIAL": 0,
-                                    "MISLEADING": 1, "NO_CLAIMS": 1}
+                                    "CONTRADICTED": 1, "NO_CLAIMS": 1,
+                                    "NO_DESCRIPTION": 0, "INCONSISTENT": 0}
     assert len(rec["prs"]) == 2
 
 
