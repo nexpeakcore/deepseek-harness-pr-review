@@ -6,6 +6,9 @@ post_comment: true
 skip_human: true
 drafts: false
 skip_bots: true              # skip bot PRs (Renovate/Dependabot) in auto review
+ping_comment: true           # short new comment each round. The full report comment is
+                             # edited in place and GitHub does not notify on edits, so
+                             # this is the only thing that reaches subscribers.
 max_parallel: 1              # PRs reviewed at once per pass (1 = sequential, max 8).
                              # Each review is its own process; the real ceiling is
                              # your model API concurrency, not CPU.

@@ -372,3 +372,100 @@ def test_review_lock_corrupt_is_treated_as_stale(tmp_path):
     (session_dir / "review.lock").write_text("not json at all")
     assert _acquire_review_lock(session_dir) is True
     _release_review_lock(session_dir)
+
+
+def _stub_pipeline(monkeypatch, tmp_path, findings=None):
+    """Chạy main() tới bước post mà không gọi gh/model thật."""
+    findings = findings or {
+        "claims": [{"id": "C1", "status": "PARTIAL", "evidence": [], "note": ""}],
+        "docs": [{"path": "README.md", "status": "STALE", "what": "x"}],
+        "impact": [], "threads": [], "unresolved_questions": []}
+    snapshot = {"owner": "demo", "repo": "app", "pr": 7, "title": "T",
+                "body": "B", "author": "a", "base": "main", "head": "x",
+                "head_sha": "abcdef1234", "labels": [], "files": [],
+                "commits": [], "threads": []}
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")
+    monkeypatch.setenv("DSH_SESSION_ROOT", str(tmp_path / "sessions"))
+    monkeypatch.setattr("src.run.gh_available", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda prompt: "n")
+
+    def fake_build_snapshot(owner, repo, n, session_dir, gh=None):
+        (session_dir / "snapshot.json").write_text(json.dumps(snapshot))
+        return snapshot
+
+    def fake_extract_claims(snapshot, cfg, session_dir, chat=None):
+        (session_dir / "claims.json").write_text(json.dumps([]))
+        return []
+
+    monkeypatch.setattr("src.snapshot.build_snapshot", fake_build_snapshot)
+    monkeypatch.setattr("src.claims.extract_claims", fake_extract_claims)
+    monkeypatch.setattr("src.run.setup_workspace", lambda *a, **k: None)
+    monkeypatch.setattr("src.run.run_verify", lambda *a, **k: findings)
+    return snapshot, findings
+
+
+def test_main_posts_report_and_round_ping(tmp_path, monkeypatch, capsys):
+    """Mỗi vòng: báo cáo sửa tại chỗ + 1 comment ngắn MỚI để có thông báo.
+
+    Patch ở seam của run.py chứ không patch src.synthesize.run_gh: post_comment
+    bind gh=run_gh làm default lúc import nên patch module không ăn.
+    """
+    snapshot, findings = _stub_pipeline(monkeypatch, tmp_path)
+    calls = {}
+
+    monkeypatch.setattr("src.run.post_comment",
+                        lambda o, r, n, body: calls.setdefault("report", body) or True)
+    monkeypatch.setattr("src.run.find_report_comment",
+                        lambda o, r, n: {"html_url": "https://gh/c/1"})
+    monkeypatch.setattr("src.run.post_ping",
+                        lambda o, r, n, body: calls.setdefault("ping", body))
+
+    assert main(["demo/app", "7", "--skip-human"]) == 0
+    assert "report" in calls and "ping" in calls
+    ping = calls["ping"]
+    assert "Harness review" in ping
+    assert "`abcdef1`" in ping                 # commit đã review
+    assert "**1** risk" in ping                # 1 claim PARTIAL
+    assert "**1** doc error" in ping           # 1 STALE
+    assert "https://gh/c/1" in ping            # link tới báo cáo đầy đủ
+    assert len(ping) < 400                     # "ngắn" là một yêu cầu
+    assert "Posted round ping." in capsys.readouterr().out
+
+
+def test_main_no_ping_flag_skips_the_ping(tmp_path, monkeypatch, capsys):
+    _stub_pipeline(monkeypatch, tmp_path)
+    calls = []
+    monkeypatch.setattr("src.run.post_comment", lambda *a, **k: True)
+    monkeypatch.setattr("src.run.post_ping",
+                        lambda *a, **k: calls.append(a))
+    assert main(["demo/app", "7", "--skip-human", "--no-ping"]) == 0
+    assert calls == []
+    assert "Posted round ping." not in capsys.readouterr().out
+
+
+def test_ping_failure_does_not_fail_the_review(tmp_path, monkeypatch, capsys):
+    """Mất ping thì khó chịu; mất cả review vì ping thì tệ hơn."""
+    _stub_pipeline(monkeypatch, tmp_path)
+
+    def boom(*a, **k):
+        raise RuntimeError("gh api failed: rate limited")
+
+    monkeypatch.setattr("src.run.post_comment", lambda *a, **k: True)
+    monkeypatch.setattr("src.run.find_report_comment", boom)
+
+    assert main(["demo/app", "7", "--skip-human"]) == 0
+    assert "could not post round ping" in capsys.readouterr().err
+
+
+def test_ping_still_posts_when_report_comment_url_is_unavailable(tmp_path,
+                                                                 monkeypatch):
+    """Không tìm được comment báo cáo → ping vẫn phải ra, chỉ thiếu link."""
+    _stub_pipeline(monkeypatch, tmp_path)
+    calls = {}
+    monkeypatch.setattr("src.run.post_comment", lambda *a, **k: True)
+    monkeypatch.setattr("src.run.find_report_comment", lambda o, r, n: None)
+    monkeypatch.setattr("src.run.post_ping",
+                        lambda o, r, n, body: calls.setdefault("ping", body))
+    assert main(["demo/app", "7", "--skip-human"]) == 0
+    assert "Harness review" in calls["ping"]
+    assert "Full report" not in calls["ping"]

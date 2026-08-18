@@ -358,6 +358,7 @@ def trigger_review(owner: str, repo: str, pr: int):
             force=True,
             skip_human=cfg.get("skip_human", True),
             no_post=not cfg.get("post_comment", True),
+            no_ping=not cfg.get("ping_comment", True),
             timeout_seconds=cfg.get("review_timeout_minutes", 30) * 60)
     except Exception:
         # run.py tự dọn review.lock trong finally; nếu nó chưa kịp tạo lock

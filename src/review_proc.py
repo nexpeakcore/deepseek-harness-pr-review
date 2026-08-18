@@ -49,7 +49,8 @@ def review_lock_alive(lock: Path) -> bool:
 
 
 def build_argv(owner: str, repo: str, n: int, *, force: bool = True,
-               skip_human: bool = True, no_post: bool = False) -> list[str]:
+               skip_human: bool = True, no_post: bool = False,
+               no_ping: bool = False) -> list[str]:
     """argv for `python -m src.run` — kept separate so tests can assert on it."""
     argv = [f"{owner}/{repo}", str(n)]
     if force:
@@ -58,12 +59,15 @@ def build_argv(owner: str, repo: str, n: int, *, force: bool = True,
         argv.append("--skip-human")
     if no_post:
         argv.append("--no-post")
+    if no_ping:
+        argv.append("--no-ping")
     return argv
 
 
 def run_review(owner: str, repo: str, n: int, *, session_root: Path,
                log_path: Path, force: bool = True, skip_human: bool = True,
-               no_post: bool = False, cwd: Path | None = None,
+               no_post: bool = False, no_ping: bool = False,
+               cwd: Path | None = None,
                timeout_seconds: float | None = None) -> int:
     """Run one review in its own process. Returns run.py's exit code.
 
@@ -80,7 +84,7 @@ def run_review(owner: str, repo: str, n: int, *, session_root: Path,
 
     cmd = [sys.executable, "-m", "src.run",
            *build_argv(owner, repo, n, force=force, skip_human=skip_human,
-                       no_post=no_post)]
+                       no_post=no_post, no_ping=no_ping)]
     log_path.parent.mkdir(parents=True, exist_ok=True)
     try:
         with open(log_path, "w", buffering=1) as logf:

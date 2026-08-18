@@ -5,6 +5,10 @@ from pathlib import Path
 from src.gh import run_gh
 
 MARKER = "<!-- harness-pr-review -->"
+# Deliberately not a superstring of MARKER: post_comment PATCHes the first
+# comment containing MARKER, so a ping carrying it would be overwritten by the
+# next full report. test_ping_marker_is_not_confused_with_main_marker pins this.
+PING_MARKER = "<!-- harness-pr-review-ping -->"
 STATUS_LABELS = {"PASS": "Matches", "FAIL": "Mismatch", "PARTIAL": "Partial",
                  "UNVERIFIED": "Unverified"}
 
@@ -21,6 +25,23 @@ def _bullet(text, max_len=100):
     if len(text) > max_len:
         text = text[:max_len] + "…"
     return text.replace("\n", " ")
+
+
+def summary_counts(findings: dict) -> dict:
+    """Headline numbers, shared by the full comment and the round ping."""
+    claims = findings.get("claims", [])
+    by_status = {k: sum(1 for c in claims if c.get("status") == k)
+                 for k in ("PASS", "FAIL", "PARTIAL", "UNVERIFIED")}
+    risks = by_status["FAIL"] + by_status["PARTIAL"]
+    risks += sum(1 for i in findings.get("impact", [])
+                 if i.get("impact") in ("BROKEN", "RISK"))
+    return {
+        "claims": len(claims),
+        "by_status": by_status,
+        "risks": risks,
+        "doc_errors": sum(1 for d in findings.get("docs", [])
+                          if d.get("status") in ("WRONG", "FABRICATED", "STALE")),
+    }
 
 
 def _overall_verdict(findings: dict) -> str:
@@ -242,12 +263,8 @@ def build_comment(snapshot: dict, claims: list[dict], findings: dict,
                          count=len(answers)),
     ]
 
-    bugs = sum(1 for c in findings.get("claims", [])
-               if c.get("status") in ("FAIL", "PARTIAL"))
-    bugs += sum(1 for i in findings.get("impact", [])
-                if i.get("impact") in ("BROKEN", "RISK"))
-    doc_errors = sum(1 for d in findings.get("docs", [])
-                     if d.get("status") in ("WRONG", "FABRICATED", "STALE"))
+    counts = summary_counts(findings)
+    bugs, doc_errors = counts["risks"], counts["doc_errors"]
     summary = (
         f"{_badge(v_text, v_color)} "
         f"{_badge(f'Risks found: {bugs}', '#c0392b' if bugs else '#6b7280')} "
@@ -258,6 +275,57 @@ def build_comment(snapshot: dict, claims: list[dict], findings: dict,
         f"{_completion_line(snapshot, rounds, completed_at)}\n\n"
         f"{chr(10).join(sections)}\n\n{MARKER}"
     )
+
+
+def build_ping(snapshot: dict, findings: dict, rounds: int | None = None,
+               report_url: str | None = None,
+               completed_at: str | None = None) -> str:
+    """Short per-round comment carrying the headline numbers.
+
+    Exists purely to raise a notification. The full report lives in one comment
+    that is edited in place, and GitHub notifies nobody about an edit, so
+    without a fresh comment a finished re-review is invisible until someone
+    happens to open the PR. Kept to two lines so a PR with many pushes reads as
+    a round log rather than as spam.
+    """
+    c = summary_counts(findings)
+    when = completed_at or time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime())
+    verdict = VERDICT_BADGE.get(_overall_verdict(findings),
+                                ("", _overall_verdict(findings)))[1]
+    st = c["by_status"]
+    breakdown = ", ".join(
+        f"{n} {STATUS_LABELS[k].lower()}"
+        for k, n in st.items() if n)
+
+    head = f"round {rounds}" if rounds else "review"
+    sha = (snapshot.get("head_sha") or "")[:7]
+    where = f" · commit `{sha}`" if sha else ""
+    line1 = f"🔍 **Harness review — {head} done**{where} · {when}"
+    line2 = (f"{verdict} · **{c['risks']}** risk"
+             f"{'' if c['risks'] == 1 else 's'} · "
+             f"**{c['doc_errors']}** doc error"
+             f"{'' if c['doc_errors'] == 1 else 's'} · "
+             f"{c['claims']} claim{'' if c['claims'] == 1 else 's'}"
+             f"{f' ({breakdown})' if breakdown else ''}")
+    link = (f"\n\n[Full report ↑]({report_url})" if report_url else "")
+    return f"{line1}\n\n{line2}{link}\n\n{PING_MARKER}"
+
+
+def find_report_comment(owner: str, repo: str, n: int, *, gh=run_gh,
+                        list_comments=None) -> dict | None:
+    """The single marked report comment, or None. Never matches a ping."""
+    if list_comments is None:
+        list_comments = lambda: gh(
+            ["api", f"repos/{owner}/{repo}/issues/{n}/comments", "--paginate"])
+    for c in list_comments():
+        if MARKER in c.get("body", ""):
+            return c
+    return None
+
+
+def post_ping(owner: str, repo: str, n: int, body: str, *, gh=run_gh) -> None:
+    """Post the round ping as a NEW comment — that is what notifies people."""
+    _post_body(gh, ["api", f"repos/{owner}/{repo}/issues/{n}/comments"], body)
 
 
 def _post_body(gh, args_prefix: list[str], body: str) -> None:

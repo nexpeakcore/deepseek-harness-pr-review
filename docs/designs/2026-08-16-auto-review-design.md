@@ -73,10 +73,25 @@ fresh with the new head. `post_comment` is already idempotent (updates the singl
 marked comment), so re-review never spams.
 
 The flip side of editing in place is that GitHub raises no notification for it,
-so a reader cannot tell a finished re-review from the round before it. The
-comment therefore opens with a `Review complete` line: timestamp, round number
-and the short head SHA that was reviewed. The SHA is the part that answers the
-question people actually have — did this cover my latest push?
+so a reader cannot tell a finished re-review from the round before it. Two
+things address that:
+
+1. The report comment opens with a `Review complete` line: timestamp, round
+   number and the short head SHA reviewed. The SHA answers the question people
+   actually have — did this cover my latest push? This helps only once someone
+   opens the PR.
+2. A **round ping** — a short NEW comment per round (`post_ping`, marker
+   `<!-- harness-pr-review-ping -->`). Being new is the whole point: that is
+   what GitHub notifies on. It carries verdict, risk count, doc-error count and
+   the claim breakdown, plus a link up to the report comment.
+
+`PING_MARKER` is deliberately not a superstring of `MARKER`. `post_comment`
+PATCHes the first comment containing `MARKER`, so a ping carrying it would be
+overwritten by the next full report and the round log would silently vanish.
+
+Both counts come from `summary_counts()` so the ping and the report cannot
+drift apart. A failing ping is logged and swallowed: losing a notification is
+annoying, losing the review because the notification failed is worse.
 
 ## Error Handling
 

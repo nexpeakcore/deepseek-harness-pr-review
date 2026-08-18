@@ -149,11 +149,15 @@ Results land in `sessions/<owner>/<repo>/pr-<n>/report.md` (change the directory
    verifies each claim, docs reality-check (MATCH/STALE/WRONG/FABRICATED),
    requirement impact, review thread status
 4. **Human gate** — asks for confirmation (≤20 words/question) when docs are wrong or claims are uncertain
-5. **Synthesize** — English report.md + one English comment on the PR
-   (idempotent). Because re-reviews edit that comment in place, GitHub sends no
-   notification for them, so the comment opens with a `Review complete` line
-   carrying the timestamp, round number and reviewed commit — that line is how
-   you tell a fresh round from the previous one.
+5. **Synthesize** — English report.md + two comments on the PR:
+   - **The report** — one comment, edited in place on every re-review so the PR
+     never fills up with stale reports. It opens with a `Review complete` line
+     carrying the timestamp, round number and reviewed commit.
+   - **A round ping** — a short new comment per round with the headline numbers
+     (verdict, risks, doc errors, claim breakdown) and a link up to the report.
+     GitHub raises no notification for an edit, so this is the only part that
+     actually reaches subscribers. Disable with `--no-ping`, or
+     `ping_comment: false` in `autoreview.yml`.
 
 ## Running tests
 

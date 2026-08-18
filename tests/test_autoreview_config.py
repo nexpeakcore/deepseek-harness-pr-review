@@ -136,3 +136,10 @@ def test_review_timeout_rejects_bad_values(tmp_path):
     path.write_text("org: o\nrepos:\n  a: auto\nreview_timeout_minutes: 0\n")
     with pytest.raises(ValueError, match="review_timeout_minutes"):
         load_config(path)
+
+
+def test_ping_comment_defaults_on(tmp_path):
+    """Ping bật mặc định: không có nó thì re-review hoàn toàn im lặng."""
+    path = tmp_path / "autoreview.yml"
+    path.write_text("org: o\nrepos:\n  a: auto\n")
+    assert load_config(path)["ping_comment"] is True

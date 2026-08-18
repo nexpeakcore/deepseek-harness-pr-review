@@ -56,3 +56,8 @@ def test_run_review_spawn_failure_is_reported(tmp_path, monkeypatch):
     assert run_review("o", "r", 7, session_root=tmp_path,
                       log_path=log) == EXIT_SPAWN_FAILED
     assert "could not start review process" in log.read_text()
+
+
+def test_build_argv_no_ping():
+    assert "--no-ping" not in build_argv("o", "r", 7)
+    assert "--no-ping" in build_argv("o", "r", 7, no_ping=True)
