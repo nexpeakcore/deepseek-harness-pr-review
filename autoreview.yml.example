@@ -19,6 +19,8 @@ max_agents: 4                # concurrent model agents across the WHOLE system, 
                              # so in-flight calls = max_parallel x agents per review.
                              # Enforced by lock files, so every review process and
                              # every manual CLI run shares the one budget. Max 16.
-repos:
+repos:                       # adding a repo checks it exists and is visible
   your-repo: auto            # auto-review this repo's PRs
   another-repo: manual       # skip in poller; review via CLI/UI
+                             # `autoreview --check-repos` reports unreachable
+                             # entries; the /config page flags and removes them

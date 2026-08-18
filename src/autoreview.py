@@ -269,6 +269,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--add-repo", metavar="REPO",
                         help="add repo (name or owner/name) and set its mode")
     parser.add_argument("--rm-repo", metavar="REPO", help="remove a repo")
+    parser.add_argument("--force-add", action="store_true",
+                        help="add the repo even if GitHub cannot see it")
+    parser.add_argument("--check-repos", action="store_true",
+                        help="report which configured repos GitHub cannot reach")
     parser.add_argument("--mode", choices=["auto", "manual"], default="auto",
                         help="mode for --add-repo (default: auto)")
     parser.add_argument("--repos", action="store_true",
@@ -287,6 +291,28 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"error: cannot parse repo from: {raw!r}", file=sys.stderr)
                 return 2
             repo_ref_key = raw  # tên trần → org từ config
+
+        # Kiểm tra trước khi ghi: một cái tên gõ sai từng thành entry vĩnh viễn
+        # trong autoreview.yml mà poller retry mỗi pass.
+        from src.repo_check import ACTIONABLE, UNKNOWN, check_repo
+
+        if "/" in repo_ref_key:
+            owner, name = repo_ref_key.split("/", 1)
+        else:
+            try:
+                owner, name = load_config(args.config).get("org", ""), repo_ref_key
+            except (ValueError, OSError):
+                owner, name = "", repo_ref_key
+        if owner and name:
+            check = check_repo(owner, name)
+            if check["status"] in ACTIONABLE and not args.force_add:
+                print(f"error: {owner}/{name}: {check['detail']}\n"
+                      f"       use --force-add to add it anyway", file=sys.stderr)
+                return 2
+            if check["status"] == UNKNOWN:
+                print(f"warning: could not verify {owner}/{name}: "
+                      f"{check['detail']}", file=sys.stderr)
+
         set_repo_mode(args.config, repo_ref_key, args.mode)
         print(f"{repo_ref_key} -> {args.mode}")
         return 0
@@ -294,6 +320,32 @@ def main(argv: list[str] | None = None) -> int:
         remove_repo(args.config, args.rm_repo)
         print(f"removed {args.rm_repo}")
         return 0
+    if args.check_repos:
+        from src.autoreview_config import list_repos as _list_repos
+        from src.repo_check import ACTIONABLE, check_repos
+
+        cfg = load_config(args.config)
+        org = cfg.get("org") or ""
+        names = [r["name"] for r in _list_repos(args.config)
+                 if r["mode"] != "unlisted"]
+        pairs = [tuple(n.split("/", 1)) if "/" in n else (org, n) for n in names]
+        results = check_repos([(o, r) for o, r in pairs if o and r])
+        bad = 0
+        for name, (owner, repo_name) in zip(names, pairs):
+            result = results.get(f"{owner}/{repo_name}",
+                                 {"status": "unknown", "detail": "no org configured"})
+            mark = "ok " if result["status"] == "ok" else result["status"]
+            if result["status"] in ACTIONABLE:
+                bad += 1
+            print(f"{mark:<10} {name}"
+                  + (f"  — {result['detail']}" if result["status"] != "ok" else ""))
+        # Report on stdout so it stays interleaved with the list; the exit
+        # code is the part a script reads.
+        if bad:
+            print(f"\n{bad} unreachable — remove with: "
+                  f"autoreview --rm-repo <name>")
+        return 1 if bad else 0
+
     if args.repos:
         for r in list_repos(args.config):
             print(f"{r['name']:<40} {r['mode']}")

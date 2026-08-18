@@ -550,19 +550,108 @@ def test_pr_page_never_reviewed_still_says_not_reviewed(tmp_path, monkeypatch):
     assert "Failed · interrupted" not in resp.text
 
 
-def _config_client(tmp_path, monkeypatch, body):
+def _cfg_client(tmp_path, monkeypatch, gh,
+                body="org: sample-org\nrepos:\n  sample-app: auto\n"):
     cfg_path = tmp_path / "autoreview.yml"
     cfg_path.write_text(body)
     monkeypatch.setenv("AUTOREVIEW_CONFIG", str(cfg_path))
     monkeypatch.setenv("DSH_SESSION_ROOT", str(tmp_path / "sessions"))
-    monkeypatch.setattr("src.gh.run_gh", lambda args, **kw: [])
+    monkeypatch.setattr("src.gh.run_gh", gh)
+    # The reachability cache is process-global; tests must not inherit each other.
+    import web.server
+    web.server._check_cache.clear()
     return TestClient(app), cfg_path
+
+def _gh_with_missing(missing):
+    """Org listing works; repos/<x> 404s for names in `missing`."""
+    def gh(args, **kw):
+        target = args[1]
+        if target.startswith("orgs/"):
+            return [{"name": "sample-app"}]
+        if any(target.endswith(m) for m in missing):
+            raise RuntimeError("gh api failed: gh: Not Found (HTTP 404)")
+        return target.removeprefix("repos/")
+    return gh
+
+
+def test_add_repo_refuses_one_github_cannot_see(tmp_path, monkeypatch):
+    client, cfg_path = _cfg_client(tmp_path, monkeypatch,
+                                   _gh_with_missing(["typoed-repo"]))
+    r = client.post("/api/config/repos", json={"repo": "typoed-repo"})
+    assert r.status_code == 400
+    assert "not found" in r.json()["detail"]
+    # The whole point: it must not reach the config file.
+    assert "typoed-repo" not in load_config(cfg_path)["repos"]
+
+
+def test_add_repo_accepts_a_reachable_one(tmp_path, monkeypatch):
+    client, cfg_path = _cfg_client(tmp_path, monkeypatch, _gh_with_missing([]))
+    r = client.post("/api/config/repos", json={"repo": "nexpeakcore/erp"})
+    assert r.status_code == 200
+    assert r.json()["warning"] is None
+    assert load_config(cfg_path)["repos"]["nexpeakcore/erp"] == "auto"
+
+
+def test_add_repo_survives_an_unverifiable_check(tmp_path, monkeypatch):
+    """A network blip must not block a legitimate repo — but must be said out loud."""
+    def gh(args, **kw):
+        if args[1].startswith("orgs/"):
+            return []
+        raise RuntimeError("dial tcp: connection refused")
+
+    client, cfg_path = _cfg_client(tmp_path, monkeypatch, gh)
+    r = client.post("/api/config/repos", json={"repo": "acme/thing"})
+    assert r.status_code == 200
+    assert "could not verify" in r.json()["warning"]
+    assert load_config(cfg_path)["repos"]["acme/thing"] == "auto"
+
+
+def test_check_endpoint_lists_unreachable_repos(tmp_path, monkeypatch):
+    client, _ = _cfg_client(
+        tmp_path, monkeypatch, _gh_with_missing(["ghost", "sample-org/gone"]),
+        body="org: sample-org\nrepos:\n  sample-app: auto\n  ghost: auto\n"
+             "  sample-org/gone: manual\n")
+    data = client.get("/api/config/repos/check").json()
+    assert data["unreachable"] == ["ghost", "sample-org/gone"]
+    assert data["repos"]["sample-app"]["status"] == "ok"
+    assert data["repos"]["ghost"]["status"] == "missing"
+
+
+def test_config_page_flags_and_can_remove_unreachable(tmp_path, monkeypatch):
+    client, cfg_path = _cfg_client(
+        tmp_path, monkeypatch, _gh_with_missing(["ghost"]),
+        body="org: sample-org\nrepos:\n  sample-app: auto\n  ghost: auto\n")
+    html = client.get("/config").text
+    assert "1 repo cannot be reached" in html
+    assert "ghost" in html
+
+    assert client.delete("/api/config/repos/ghost").status_code == 200
+    assert "ghost" not in load_config(cfg_path)["repos"]
+
+
+def test_repo_check_results_are_cached_until_rechecked(tmp_path, monkeypatch):
+    calls = []
+
+    def gh(args, **kw):
+        if args[1].startswith("orgs/"):
+            return []
+        calls.append(args[1])
+        return args[1].removeprefix("repos/")
+
+    client, _ = _cfg_client(tmp_path, monkeypatch, gh,
+                            body="repos:\n  acme/thing: auto\n")
+    client.get("/config")
+    assert len(calls) == 1
+    client.get("/config")            # cached — the page reloads after every edit
+    assert len(calls) == 1
+    client.get("/config?recheck=1")  # explicit re-check busts it
+    assert len(calls) == 2
 
 
 def test_repo_page_does_not_claim_auto_from_another_owners_bare_key(tmp_path, monkeypatch):
     """/repos/nexpeakcore/erp must not read `erp: auto`, which means sample-org/erp."""
-    client, _ = _config_client(
-        tmp_path, monkeypatch,
+    client, _ = _cfg_client(
+        tmp_path, monkeypatch, lambda args, **kw: [],
         "org: sample-org\ndefault_mode: manual\nrepos:\n  erp: auto\n")
 
     html = client.get("/repos/nexpeakcore/erp").text
@@ -574,8 +663,8 @@ def test_repo_page_does_not_claim_auto_from_another_owners_bare_key(tmp_path, mo
 def test_toggling_mode_from_a_repo_page_targets_that_owner(tmp_path, monkeypatch):
     from src.autoreview_config import load_config as load_acfg
 
-    client, cfg_path = _config_client(
-        tmp_path, monkeypatch, "org: sample-org\nrepos:\n  erp: auto\n")
+    client, cfg_path = _cfg_client(
+        tmp_path, monkeypatch, lambda args, **kw: [], "org: sample-org\nrepos:\n  erp: auto\n")
 
     r = client.post("/api/config/repos/nexpeakcore%2Ferp/mode", json={"mode": "auto"})
     assert r.status_code == 200
@@ -588,8 +677,8 @@ def test_config_routes_accept_owner_slash_repo_keys(tmp_path, monkeypatch):
     """Config keys contain slashes; a single-segment route 404'd on all of them."""
     from src.autoreview_config import load_config as load_acfg
 
-    client, cfg_path = _config_client(
-        tmp_path, monkeypatch,
+    client, cfg_path = _cfg_client(
+        tmp_path, monkeypatch, lambda args, **kw: [],
         "org: sample-org\nrepos:\n  nexpeakcore/erp-desktop: auto\n  erp: auto\n")
 
     r = client.post("/api/config/repos/nexpeakcore%2Ferp-desktop/mode",

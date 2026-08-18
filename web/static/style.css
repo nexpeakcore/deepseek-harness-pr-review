@@ -94,7 +94,7 @@ tr.failed td { background: #fdecea; }
 .tag.auto, .v-auto, .v-accurate, .v-pass, .v-match, .v-resolved, .v-fixed {
   background: #eaf7ee; color: var(--green);
 }
-.tag.manual, .v-manual, .v-no_claims, .v-unverified, .v-outdated, .v-unaffected {
+.tag.manual, .v-manual, .v-no_claims, .v-unverified, .v-unknown, .v-outdated, .v-unaffected {
   background: #eef1f4; color: var(--gray);
 }
 .tag.unlisted, .v-unlisted { background: #f4f6f8; color: #a0a6ad; }
@@ -104,6 +104,9 @@ tr.failed td { background: #fdecea; }
 }
 .tag.fail, .v-contradicted, .v-fail, .v-fabricated, .v-broken, .v-inconsistent { background: #fdecea; color: var(--red); }
 .verdict { margin-right: 4px; }
+
+.warn-block { border-color: var(--orange); background: #fffdf7; }
+.warn-block h2 { color: var(--orange); }
 
 /* ---------- buttons ---------- */
 .tabs { display: flex; gap: 4px; margin: 18px 0; flex-wrap: wrap; }

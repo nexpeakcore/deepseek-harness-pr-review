@@ -8,13 +8,36 @@
 <p class="muted">Config: {{ cfg.config_path }} · org: {{ cfg.org or "—" }}
   · interval: {{ cfg.interval }}m · drafts: {{ cfg.drafts }}
   · post comment: {{ cfg.post_comment }}</p>
+{% if cfg.unreachable %}
+<div class="config-block warn-block">
+  <h2>{{ cfg.unreachable|length }} repo{{ 's' if cfg.unreachable|length != 1 }} cannot be reached</h2>
+  <p class="muted">GitHub answers 404 both for a repo that is gone and for one
+    this token cannot see, so these are either deleted, renamed, or private to
+    another account. The poller retries them every pass.</p>
+  <p class="muted">{{ cfg.unreachable|join(", ") }}</p>
+  <button class="tab-btn danger" onclick="removeUnreachable({{ cfg.unreachable|tojson }})">
+    Remove all {{ cfg.unreachable|length }}</button>
+</div>
+{% endif %}
+
 <table class="table">
-  <thead><tr><th>Repo</th><th>Mode</th><th>Actions</th></tr></thead>
+  <thead><tr><th>Repo</th><th>Mode</th><th>Reachable</th><th>Actions</th></tr></thead>
   <tbody>
   {% for r in cfg.repos %}
     <tr class="{{ 'unlisted' if r.mode == 'unlisted' }}">
       <td>{{ r.name }}</td>
       <td><span class="verdict v-{{ r.mode }}">{{ r.mode }}</span></td>
+      <td>
+        {% if r.mode == 'unlisted' %}
+          <span class="muted">—</span>
+        {% elif r.check.status == 'ok' %}
+          <span class="verdict v-pass">ok</span>
+        {% elif r.check.status == 'unknown' %}
+          <span class="verdict v-unverified" title="{{ r.check.detail }}">unverified</span>
+        {% else %}
+          <span class="verdict v-fail" title="{{ r.check.detail }}">{{ r.check.status }}</span>
+        {% endif %}
+      </td>
       <td>
         {% if r.mode == 'unlisted' %}
           <button class="tab-btn" onclick="setMode('{{ r.name }}','auto')">Enable auto</button>
@@ -25,14 +48,14 @@
       </td>
     </tr>
   {% else %}
-    <tr><td colspan="3" class="empty">No repos configured</td></tr>
+    <tr><td colspan="4" class="empty">No repos configured</td></tr>
   {% endfor %}
   </tbody>
 </table>
 <form class="add-form" onsubmit="addRepo(event)">
   <input class="add-input" id="new-repo" placeholder="owner/repo or repo name">
   <button class="tab-btn" type="submit">Add repo</button>
-  <button class="tab-btn" type="button" onclick="location.reload()">Refresh</button>
+  <button class="tab-btn" type="button" onclick="location.href='/config?recheck=1'">Re-check repos</button>
 </form>
 {% endif %}
 
@@ -43,7 +66,19 @@ async function postJson(url, body) {
     headers: {"Content-Type": "application/json"},
     body: JSON.stringify(body)
   });
-  if (!r.ok) { alert((await r.json()).detail || "error"); return; }
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) { alert(data.detail || "error"); return; }
+  if (data.warning) alert("Added, but " + data.warning);
+  location.reload();
+}
+
+async function removeUnreachable(names) {
+  if (!confirm(`Remove ${names.length} unreachable repo(s) from autoreview.yml?
+
+` + names.join("\n"))) return;
+  for (const name of names) {
+    await fetch(`/api/config/repos/${encodeURIComponent(name)}`, {method: "DELETE"});
+  }
   location.reload();
 }
 function setMode(repo, mode) { postJson(`/api/config/repos/${encodeURIComponent(repo)}/mode`, {mode}); }

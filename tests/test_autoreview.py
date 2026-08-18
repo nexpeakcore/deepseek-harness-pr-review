@@ -111,6 +111,7 @@ def test_main_add_repo_writes_config(tmp_path, monkeypatch):
     cfg_path = tmp_path / "autoreview.yml"
     cfg_path.write_text("org: sample-org\nrepos:\n  sample-app: manual\n")
     monkeypatch.setattr("src.autoreview.CONFIG_PATH", cfg_path)
+    monkeypatch.setattr("src.gh.run_gh", lambda args, **kw: "ok/repo")
     code = main(["--add-repo", "admin-web", "--mode", "auto"])
     assert code == 0
     cfg = load_config(cfg_path)
@@ -279,6 +280,7 @@ def test_main_add_repo_url(tmp_path, monkeypatch):
     cfg_path = tmp_path / "autoreview.yml"
     cfg_path.write_text("org: sample-org\nrepos:\n  sample-app: manual\n")
     monkeypatch.setattr("src.autoreview.CONFIG_PATH", cfg_path)
+    monkeypatch.setattr("src.gh.run_gh", lambda args, **kw: "ok/repo")
     code = main(["--add-repo", "https://github.com/sample-org/sample-api",
                  "--mode", "auto"])
     assert code == 0
@@ -290,6 +292,7 @@ def test_main_add_repo_bare_name_uses_org(tmp_path, monkeypatch):
     cfg_path = tmp_path / "autoreview.yml"
     cfg_path.write_text("org: sample-org\nrepos:\n  sample-app: manual\n")
     monkeypatch.setattr("src.autoreview.CONFIG_PATH", cfg_path)
+    monkeypatch.setattr("src.gh.run_gh", lambda args, **kw: "ok/repo")
     code = main(["--add-repo", "sample-app2", "--mode", "auto"])
     assert code == 0
     assert load_config(cfg_path)["repos"]["sample-app2"] == "auto"
@@ -448,3 +451,65 @@ def test_run_pass_skips_corrupt_review_lock_as_stale(tmp_path, monkeypatch):
                     gh=lambda args, **kw: [{"number": 1, "head": {"sha": "a"},
                                             "draft": False}]) == 1
     assert dispatched == [1]
+
+
+def test_add_repo_refuses_one_github_cannot_see(tmp_path, capsys, monkeypatch):
+    from src.autoreview import main
+
+    cfg = tmp_path / "autoreview.yml"
+    cfg.write_text("org: acme\nrepos: {}\n")
+
+    def gh(args, **kw):
+        raise RuntimeError("gh api failed: gh: Not Found (HTTP 404)")
+
+    monkeypatch.setattr("src.gh.run_gh", gh)
+    code = main(["--add-repo", "typoed", "--config", str(cfg)])
+    assert code == 2
+    assert "not found" in capsys.readouterr().err
+    assert "typoed" not in cfg.read_text()
+
+
+def test_add_repo_can_be_forced(tmp_path, monkeypatch):
+    from src.autoreview import main
+    from src.autoreview_config import load_config
+
+    cfg = tmp_path / "autoreview.yml"
+    cfg.write_text("org: acme\nrepos: {}\n")
+    monkeypatch.setattr(
+        "src.gh.run_gh",
+        lambda args, **kw: (_ for _ in ()).throw(RuntimeError("gh: Not Found (HTTP 404)")))
+
+    assert main(["--add-repo", "later", "--config", str(cfg), "--force-add"]) == 0
+    assert load_config(cfg)["repos"]["later"] == "auto"
+
+
+def test_check_repos_reports_and_exits_nonzero(tmp_path, capsys, monkeypatch):
+    from src.autoreview import main
+
+    cfg = tmp_path / "autoreview.yml"
+    cfg.write_text("org: acme\nrepos:\n  good: auto\n  ghost: auto\n")
+
+    def gh(args, **kw):
+        if args[1].startswith("orgs/"):
+            return []
+        if args[1].endswith("ghost"):
+            raise RuntimeError("gh: Not Found (HTTP 404)")
+        return args[1].removeprefix("repos/")
+
+    monkeypatch.setattr("src.gh.run_gh", gh)
+    code = main(["--check-repos", "--config", str(cfg)])
+    out = capsys.readouterr().out
+    assert code == 1
+    assert "missing" in out and "ghost" in out
+    assert "1 unreachable" in out
+
+
+def test_check_repos_exits_zero_when_all_reachable(tmp_path, monkeypatch):
+    from src.autoreview import main
+
+    cfg = tmp_path / "autoreview.yml"
+    cfg.write_text("org: acme\nrepos:\n  good: auto\n")
+    monkeypatch.setattr(
+        "src.gh.run_gh",
+        lambda args, **kw: [] if args[1].startswith("orgs/") else "acme/good")
+    assert main(["--check-repos", "--config", str(cfg)]) == 0

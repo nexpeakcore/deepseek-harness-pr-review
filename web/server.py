@@ -12,6 +12,7 @@ from src.autoreview_config import load_config as load_autoreview_config
 from src.autoreview_config import auto_repos, list_repos, remove_repo, set_repo_mode
 from src.autoreview_config import repo_mode as config_repo_mode
 from src.config import load_config
+from src.repo_check import ACTIONABLE, OK, UNKNOWN, check_repo, check_repos
 from src.review_proc import EXIT_TIMEOUT, run_review
 from web import metrics
 
@@ -28,6 +29,49 @@ def _session_root() -> Path:
 
 def _config_path() -> Path:
     return Path(os.environ.get("AUTOREVIEW_CONFIG", "autoreview.yml"))
+
+
+def _split(name: str, org: str | None) -> tuple[str, str]:
+    """"owner/repo" as-is; a bare name against the configured org."""
+    if "/" in name:
+        owner, _, repo = name.partition("/")
+        return owner, repo
+    return (org or ""), name
+
+
+# Reachability is checked on every /config load, so it is cached: the page is
+# refreshed after each edit and 13 repos would otherwise be 13 API calls a time.
+_CHECK_TTL_SECONDS = 300
+_check_cache: dict[str, tuple[float, dict]] = {}
+
+
+def _repo_status(names: list[str], org: str | None, *, refresh: bool = False) -> dict:
+    """{name: {status, detail}} for configured repos, cached for _CHECK_TTL_SECONDS."""
+    import time
+
+    now = time.monotonic()
+    if refresh:
+        _check_cache.clear()
+    fresh, stale = {}, []
+    for name in names:
+        hit = _check_cache.get(name)
+        if hit and now - hit[0] < _CHECK_TTL_SECONDS:
+            fresh[name] = hit[1]
+        else:
+            stale.append(name)
+
+    pairs = [(name, _split(name, org)) for name in stale]
+    pairs = [(name, owner, repo) for name, (owner, repo) in pairs if owner and repo]
+    results = check_repos([(o, r) for _, o, r in pairs])
+    for name, owner, repo in pairs:
+        result = results.get(f"{owner}/{repo}", {"status": UNKNOWN, "detail": ""})
+        _check_cache[name] = (now, result)
+        fresh[name] = result
+    # A bare name with no org configured cannot be resolved into a repo at all.
+    for name in stale:
+        fresh.setdefault(name, {"status": UNKNOWN,
+                                "detail": "no org configured; use owner/repo"})
+    return fresh
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -63,18 +107,28 @@ def repo_list(request: Request):
 
 
 @app.get("/config", response_class=HTMLResponse)
-def config_page(request: Request):
+def config_page(request: Request, recheck: int = 0):
     cfg_state = None
     path = _config_path()
     if path.exists():
         try:
             cfg = load_autoreview_config(path)
+            repos = list_repos(path)
+            # Only configured repos are checked. "unlisted" rows come from the
+            # org listing, so they exist by construction.
+            listed = [r["name"] for r in repos if r["mode"] != "unlisted"]
+            status = _repo_status(listed, cfg.get("org"), refresh=bool(recheck))
+            for r in repos:
+                r["check"] = status.get(r["name"], {"status": OK, "detail": ""})
             cfg_state = {
                 "org": cfg.get("org"),
                 "interval": cfg.get("interval_minutes"),
                 "drafts": cfg.get("drafts"),
                 "post_comment": cfg.get("post_comment"),
-                "repos": list_repos(path),
+                "repos": repos,
+                "unreachable": sorted(
+                    name for name, c in status.items()
+                    if c["status"] in ACTIONABLE),
                 "config_path": str(path),
             }
         except (ValueError, OSError) as e:
@@ -233,12 +287,26 @@ def api_add_repo(payload: dict):
             raise HTTPException(
                 status_code=400,
                 detail="org not set in config; use owner/repo format")
+        owner, name = _split(repo, cfg.get("org"))
+        # Check before writing. An unreachable name used to become a permanent
+        # config entry that the poller retried every pass and that the dashboard
+        # rendered as a real repo.
+        check = check_repo(owner, name)
+        if check["status"] in ACTIONABLE:
+            raise HTTPException(
+                status_code=400,
+                detail=f"{owner}/{name}: {check['detail']}")
         set_repo_mode(path, repo, payload.get("mode", "auto"))
+        _check_cache.pop(repo, None)
     except HTTPException:
         raise
     except (ValueError, OSError) as e:
         raise HTTPException(status_code=400, detail=str(e))
-    return {"ok": True, "repo": repo}
+    # An unverifiable repo is still added — a network blip must not block work —
+    # but the caller is told the check did not actually pass.
+    warning = (f"could not verify {owner}/{name}: {check['detail']}"
+               if check["status"] == UNKNOWN else None)
+    return {"ok": True, "repo": repo, "warning": warning}
 
 
 @app.delete("/api/config/repos/{repo:path}")
@@ -250,7 +318,27 @@ def api_remove_repo(repo: str):
         remove_repo(path, repo)
     except (ValueError, OSError) as e:
         raise HTTPException(status_code=400, detail=str(e))
+    _check_cache.pop(repo, None)
     return {"ok": True, "repo": repo}
+
+
+@app.get("/api/config/repos/check")
+def api_check_repos(refresh: int = 0):
+    """Reachability of every configured repo."""
+    path = _config_path()
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="autoreview.yml not found")
+    try:
+        cfg = load_autoreview_config(path)
+        listed = [r["name"] for r in list_repos(path) if r["mode"] != "unlisted"]
+    except (ValueError, OSError) as e:
+        raise HTTPException(status_code=400, detail=f"invalid config: {e}")
+    status = _repo_status(listed, cfg.get("org"), refresh=bool(refresh))
+    return {
+        "repos": status,
+        "unreachable": sorted(n for n, c in status.items()
+                              if c["status"] in ACTIONABLE),
+    }
 
 
 def _review_lock_path(session_root: Path, owner: str, repo: str, n: int) -> Path:
