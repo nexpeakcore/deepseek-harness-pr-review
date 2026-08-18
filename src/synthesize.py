@@ -1,4 +1,5 @@
 """Phase 5: synthesize the report + post an English comment on the PR."""
+import time
 from pathlib import Path
 
 from src.gh import run_gh
@@ -153,12 +154,37 @@ def _comment_section(title: str, icon: str, table: str, open: bool = False,
             f'{_html_escape(title)}{suffix}</summary>\n\n{table}\n\n</details>')
 
 
+def _completion_line(snapshot: dict, rounds: int | None,
+                     completed_at: str | None) -> str:
+    """One line telling the reader this round finished, when, and on what commit.
+
+    The comment is edited in place on every re-review so a PR only ever carries
+    one of them. GitHub sends no notification for an edit, so without this line
+    a reader has no way to tell a finished re-review from the previous round's
+    text — and no way to tell whether it covered their latest push.
+    """
+    when = completed_at or time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime())
+    parts = [f"**Review complete** · {when}"]
+    if rounds:
+        parts.append(f"round {rounds}")
+    sha = (snapshot.get("head_sha") or "")[:7]
+    if sha:
+        parts.append(f"commit `{sha}`")
+    return (f"✅ {' · '.join(parts)} — this comment is updated in place on each "
+            f"re-review, so check the timestamp instead of waiting for a "
+            f"notification.")
+
+
 def build_comment(snapshot: dict, claims: list[dict], findings: dict,
-                  answers: list[dict], report_content: str | None = None) -> str:
+                  answers: list[dict], report_content: str | None = None,
+                  rounds: int | None = None,
+                  completed_at: str | None = None) -> str:
     """Build the English comment (single one, with marker).
 
     Colored, collapsible sections (GitHub allows inline styles; scripts are
     stripped so tabs are rendered as <details> blocks).
+
+    completed_at is injectable so tests get a deterministic body.
     """
     verdict = _overall_verdict(findings)
     v_color, v_text = VERDICT_BADGE.get(verdict, ("#6b7280", verdict))
@@ -229,6 +255,7 @@ def build_comment(snapshot: dict, claims: list[dict], findings: dict,
     )
     return (
         f"## Harness PR Review — Verdict: {summary}\n\n"
+        f"{_completion_line(snapshot, rounds, completed_at)}\n\n"
         f"{chr(10).join(sections)}\n\n{MARKER}"
     )
 

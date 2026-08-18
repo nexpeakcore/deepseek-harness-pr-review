@@ -72,6 +72,12 @@ from the session dir, then call `run.main([..., "--force"])` so all 5 phases run
 fresh with the new head. `post_comment` is already idempotent (updates the single
 marked comment), so re-review never spams.
 
+The flip side of editing in place is that GitHub raises no notification for it,
+so a reader cannot tell a finished re-review from the round before it. The
+comment therefore opens with a `Review complete` line: timestamp, round number
+and the short head SHA that was reviewed. The SHA is the part that answers the
+question people actually have — did this cover my latest push?
+
 ## Error Handling
 
 - `gh api` failure (auth, rate limit) → log `POLL-ERROR` for that repo and

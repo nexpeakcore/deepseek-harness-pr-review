@@ -112,6 +112,14 @@ def _write_failed_report(session_dir: Path, error: Exception) -> None:
     (session_dir / "report.md").write_text("\n".join(lines))
 
 
+def _read_rounds(session_dir: Path) -> int | None:
+    """Current review-round count, or None if unknown/unreadable."""
+    try:
+        return int((session_dir / "rounds.txt").read_text().strip())
+    except (OSError, ValueError):
+        return None
+
+
 def _bump_rounds(session_dir: Path) -> None:
     """Increment the review-round counter for a session (after a verify pass)."""
     path = session_dir / "rounds.txt"
@@ -331,7 +339,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.dry_run or args.fixtures is not None or args.no_post:
             return 0
         body = build_comment(snapshot, claims, findings, answers,
-                             report_content=report)
+                             report_content=report,
+                             rounds=_read_rounds(session_dir))
         if post_comment(owner, repo, int(num), body):
             print("Posted comment to PR.")
         else:
