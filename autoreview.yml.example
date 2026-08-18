@@ -6,6 +6,10 @@ post_comment: true
 skip_human: true
 drafts: false
 skip_bots: true              # skip bot PRs (Renovate/Dependabot) in auto review
+max_parallel: 1              # PRs reviewed at once per pass (1 = sequential, max 8).
+                             # Each review is its own process; the real ceiling is
+                             # your model API concurrency, not CPU.
+review_timeout_minutes: 30   # kill a hung review so it can't hold a slot forever
 repos:
   your-repo: auto            # auto-review this repo's PRs
   another-repo: manual       # skip in poller; review via CLI/UI

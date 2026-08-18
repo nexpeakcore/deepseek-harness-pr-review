@@ -234,6 +234,14 @@ launchd example (auto-start on login, every 2 minutes):
 ```
 
 `scripts/autoreview-once.sh` sources `.env` (API key stays out of the plist).
+
+**Parallel reviews.** `max_parallel` in `autoreview.yml` (default `1`, cap `8`)
+sets how many PRs one pass reviews at a time; `1` is the old sequential
+behaviour. Each review runs in its own process, and `review.lock` is per-PR, so
+two different PRs never share a workspace or a comment. The useful ceiling is
+your model API concurrency rather than CPU — roughly 80% of a review's wall
+time is spent waiting on the model. `review_timeout_minutes` (default `30`)
+kills a hung review so it cannot hold a slot forever.
 Install:
 
 ```bash

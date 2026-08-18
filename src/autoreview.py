@@ -145,21 +145,31 @@ def _clean_rerun_session(session_dir: Path) -> None:
 
 def _dispatch(cfg: dict, owner: str, repo: str, n: int,
               head_sha: str) -> int:
-    """Chạy pipeline cho 1 PR. Trả về exit code."""
-    from src.run import main
+    """Chạy pipeline cho 1 PR trong tiến trình riêng. Trả về exit code.
 
-    args = [f"{owner}/{repo}", str(n), "--force"]
-    if cfg.get("skip_human", True):
-        args.append("--skip-human")
-    if not cfg.get("post_comment", True):
-        args.append("--no-post")
-    return main(args)
+    Tiến trình riêng thay vì gọi run.main() trực tiếp: đó là điều kiện để
+    chạy song song (stdout riêng, module global riêng) và để review.lock ghi
+    đúng PID của review chứ không phải PID của poller.
+    """
+    from src.review_proc import run_review
+
+    session_root = load_env_config().session_root
+    session_dir = session_root / owner / repo / f"pr-{n}"
+    return run_review(
+        owner, repo, n,
+        session_root=session_root,
+        log_path=session_dir / "review.log",
+        force=True,
+        skip_human=cfg.get("skip_human", True),
+        no_post=not cfg.get("post_comment", True),
+        timeout_seconds=cfg.get("review_timeout_minutes", 30) * 60)
 
 
 def run_pass(cfg: dict, session_root: Path, dry_run: bool = False,
              gh=run_gh) -> int:
     """One poll pass over all auto repos. Returns count of dispatched."""
     dispatched = 0
+    queued: list[tuple] = []
     for owner, repo in auto_repos(cfg):
         key = f"{owner}/{repo}"
         try:
@@ -196,16 +206,41 @@ def run_pass(cfg: dict, session_root: Path, dry_run: bool = False,
             if plan["decision"] == "RE-RUN":
                 _clean_rerun_session(session_dir)
             print(line)
-            try:
-                code = _dispatch(cfg, owner, repo, n, plan["head_sha"])
-            except (RuntimeError, ValueError, OSError) as e:
-                print(f"FAILED {owner}/{repo}#{n}: {e}", file=sys.stderr)
-                continue
-            if code != 0:
-                print(f"FAILED {owner}/{repo}#{n}: exit {code}", file=sys.stderr)
-                continue
-            dispatched += 1
-    return dispatched
+            queued.append((owner, repo, n, plan["head_sha"]))
+
+    return dispatched + _dispatch_all(cfg, queued)
+
+
+def _run_one(cfg: dict, owner: str, repo: str, n: int, head_sha: str) -> bool:
+    """Dispatch 1 PR, log lỗi. True nếu review thành công."""
+    try:
+        code = _dispatch(cfg, owner, repo, n, head_sha)
+    except (RuntimeError, ValueError, OSError) as e:
+        print(f"FAILED {owner}/{repo}#{n}: {e}", file=sys.stderr)
+        return False
+    if code != 0:
+        print(f"FAILED {owner}/{repo}#{n}: exit {code}", file=sys.stderr)
+        return False
+    return True
+
+
+def _dispatch_all(cfg: dict, queued: list[tuple]) -> int:
+    """Chạy các PR đã lên lịch, tuần tự hoặc song song. Trả về số thành công.
+
+    max_parallel > 1 an toàn vì mỗi review là một tiến trình riêng và
+    review.lock là per-PR: hai PR khác nhau không dùng chung workspace hay
+    comment. Cùng một PR thì lock vẫn chỉ cho 1 review chạy.
+    """
+    workers = min(int(cfg.get("max_parallel", 1) or 1), len(queued))
+    if workers <= 1:
+        return sum(_run_one(cfg, *item) for item in queued)
+
+    from concurrent.futures import ThreadPoolExecutor
+
+    print(f"[autoreview] {len(queued)} reviews, {workers} at a time")
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        results = list(pool.map(lambda item: _run_one(cfg, *item), queued))
+    return sum(results)
 
 
 def main(argv: list[str] | None = None) -> int:

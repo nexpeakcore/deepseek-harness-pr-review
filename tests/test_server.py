@@ -6,6 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from src.autoreview_config import load_config
+from src.review_proc import build_argv
 from web.server import app
 
 EMPTY_FINDINGS = {"claims": [], "docs": [], "impact": [], "threads": [],
@@ -210,20 +211,25 @@ def test_trigger_review_ok(tmp_path, monkeypatch):
     monkeypatch.setenv("DSH_SESSION_ROOT", str(tmp_path / "sessions"))
     calls = []
 
-    def fake_main(argv):
-        calls.append(argv)
+    def fake_review(owner, repo, n, **kw):
+        calls.append((owner, repo, n, kw))
         return 0
 
-    monkeypatch.setattr("web.server.run_main", fake_main)
+    monkeypatch.setattr("web.server.run_review", fake_review)
     client = TestClient(app)
     r = client.post("/api/repos/sample-org/sample-app/pr/78/review")
     assert r.status_code == 200
     assert r.json()["ok"] is True
-    args = calls[0]
+    owner, repo, n, kw = calls[0]
+    args = build_argv(owner, repo, n, force=kw["force"],
+                      skip_human=kw["skip_human"], no_post=kw["no_post"])
     assert "sample-org/sample-app" in args and "78" in args
     assert "--force" in args
     assert "--skip-human" in args       # config mặc định skip_human: true
     assert "--no-post" not in args      # config mặc định post_comment: true
+    # log đi thẳng vào file của PR, không đụng sys.stdout của server
+    assert kw["log_path"].name == "review.log"
+    assert kw["log_path"].parent.name == "pr-78"
 
 
 def test_trigger_review_no_post_config(tmp_path, monkeypatch):
@@ -235,16 +241,19 @@ def test_trigger_review_no_post_config(tmp_path, monkeypatch):
     monkeypatch.setenv("AUTOREVIEW_CONFIG", str(cfg_path))
     calls = []
 
-    def fake_main(argv):
-        calls.append(argv)
+    def fake_review(owner, repo, n, **kw):
+        calls.append((owner, repo, n, kw))
         return 0
 
-    monkeypatch.setattr("web.server.run_main", fake_main)
+    monkeypatch.setattr("web.server.run_review", fake_review)
     client = TestClient(app)
     r = client.post("/api/repos/sample-org/sample-app/pr/78/review")
     assert r.status_code == 200
-    assert "--no-post" in calls[0]
-    assert "--skip-human" not in calls[0]
+    owner, repo, n, kw = calls[0]
+    args = build_argv(owner, repo, n, force=kw["force"],
+                      skip_human=kw["skip_human"], no_post=kw["no_post"])
+    assert "--no-post" in args
+    assert "--skip-human" not in args
 
 
 def test_trigger_review_missing_key(tmp_path, monkeypatch):
@@ -252,7 +261,7 @@ def test_trigger_review_missing_key(tmp_path, monkeypatch):
     cfg_path = tmp_path / "autoreview.yml"
     cfg_path.write_text("org: sample-org\nrepos:\n  sample-app: auto\n")
     monkeypatch.setenv("AUTOREVIEW_CONFIG", str(cfg_path))
-    monkeypatch.setattr("web.server.run_main", lambda argv: 3)  # thiếu API key
+    monkeypatch.setattr("web.server.run_review", lambda *a, **k: 3)  # thiếu API key
     client = TestClient(app)
     r = client.post("/api/repos/sample-org/sample-app/pr/78/review")
     assert r.status_code == 400
@@ -265,7 +274,7 @@ def test_trigger_review_error_500(tmp_path, monkeypatch):
     cfg_path = tmp_path / "autoreview.yml"
     cfg_path.write_text("org: sample-org\nrepos:\n  sample-app: auto\n")
     monkeypatch.setenv("AUTOREVIEW_CONFIG", str(cfg_path))
-    monkeypatch.setattr("web.server.run_main", lambda argv: 2)  # gh lỗi
+    monkeypatch.setattr("web.server.run_review", lambda *a, **k: 2)  # gh lỗi
     client = TestClient(app)
     r = client.post("/api/repos/sample-org/sample-app/pr/78/review")
     assert r.status_code == 500
@@ -279,7 +288,7 @@ def test_trigger_review_concurrent_409(tmp_path, monkeypatch):
     cfg_path.write_text("org: sample-org\nrepos:\n  sample-app: auto\n")
     monkeypatch.setenv("AUTOREVIEW_CONFIG", str(cfg_path))
     monkeypatch.setenv("DSH_SESSION_ROOT", str(tmp_path / "sessions"))
-    monkeypatch.setattr("web.server.run_main", lambda argv: 0)
+    monkeypatch.setattr("web.server.run_review", lambda *a, **k: 0)
     lock = tmp_path / "sessions" / "sample-org" / "sample-app" / "pr-78" \
         / "review.lock"
     lock.parent.mkdir(parents=True)
