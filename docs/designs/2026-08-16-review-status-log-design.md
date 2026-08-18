@@ -17,9 +17,14 @@ in the UI instead of a bare error alert.
 {"pid": 12345, "started_at": "2026-08-16T16:08:00"}
 ```
 
-- `web/server.py` `trigger_review` writes this on acquire
+- `src/run.py` `_acquire_review_lock` writes this on acquire, so the lock covers
+  every entry point (manual CLI, web trigger, autoreview poller) rather than only
+  web-triggered reviews. `trigger_review` no longer writes it; it clears a stale
+  lock before dispatch and `run.py` releases its own in a `finally`
 - Lock exists but PID not alive → stale (process died); treated as not running
-  so a new review can proceed (lock replaced)
+  so a new review can proceed. `_acquire_review_lock` reclaims it itself — the
+  CLI and the poller call `run.main` directly and have no dashboard to clean up
+  after them, so `O_EXCL` alone would wedge that PR forever after one crash
 
 ## Part 2 — Status + log APIs
 

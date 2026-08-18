@@ -6,7 +6,7 @@
 ## Goal
 
 Fix `/repos/{owner}/{repo}` so it lists ALL open PRs (not just reviewed ones),
-shows each PR's review status (not reviewed / reviewing / reviewed N rounds),
+shows each PR's review status (not reviewed / reviewing / failed / reviewed N rounds),
 and corrects the Risks / Doc errors numbers so they match what the PR detail page
 shows.
 
@@ -18,7 +18,11 @@ Table columns: `# | Title | Draft | Review status | Risks | Doc errors`
   (metrics.open_prs duplicates the gh call directly — kept separate to avoid a web→autoreview import)
 - Review status per PR (from sessions/):
   - `Not reviewed` — no session dir
-  - `Reviewing…` — session dir exists but findings.json missing (in progress)
+  - `Reviewing…` — a live `review.lock` (PID alive), whether or not findings
+    exist yet; a live lock with findings means a re-review is running
+  - `Failed · interrupted` — session dir exists, findings.json missing, and no
+    live lock: the review crashed or was killed. Checked after the live-lock
+    branch, so a running review is never mislabelled
   - `Reviewed · N rounds` — findings.json exists, N from rounds.txt (fallback 1)
 - Merged/closed PRs with sessions are NOT shown in the table but still counted in KPIs
 - KPI cards stay: PRs REVIEWED / RISKS FOUND / DOC ERRORS / OPEN Qs / VERDICTS
@@ -52,7 +56,9 @@ Table columns: `# | Title | Draft | Review status | Risks | Doc errors`
 - gh failure fetching open PRs → show reviewed PRs from sessions + badge
 - Draft PRs shown with badge
 - Corrupt rounds.txt (not a number) → treated as 1
-- Session dir without findings (in-progress) → "Reviewing…", no crash
+- Session dir without findings, live lock → "Reviewing…", no crash
+- Session dir without findings, no live lock → "Failed · interrupted". The PR
+  detail page reports the same state, so the two pages never disagree
 - KPI verdict donut counts only reviewed PRs (unchanged)
 
 ## Testing

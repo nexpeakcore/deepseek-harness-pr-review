@@ -79,6 +79,11 @@ export DEEPSEEK_API_KEY=sk-...   # see .env.example
 harness-pr-review doctor         # verify everything is ready
 ```
 
+Keys can also live in a `.env` file. Two locations are read, in order:
+`./.env` (dev checkout) then `~/.harness-pr-review/.env` (one-liner install,
+so the CLI works from any directory). The first file to define a key wins, and
+a real environment variable always beats both.
+
 ## Updating
 
 **Easiest — built-in self-update:**
@@ -161,8 +166,9 @@ harness-pr-review web   # open http://127.0.0.1:6789
 Pages: repo list → repo detail (KPIs + verdict donut + PR table) → PR detail
 (tabs: Claims / Docs / Impact / Threads / Confirm). The PR table lists ALL open
 PRs from GitHub with review status (Not reviewed / Reviewing / Reviewed N
-rounds); Risks counts FAIL + PARTIAL claims and BROKEN + RISK impacts; Doc
-errors counts WRONG + FABRICATED + STALE docs. Each open PR row has a
+rounds / Failed · interrupted — a session that never produced findings and has
+no live lock, i.e. the review crashed). Risks counts FAIL + PARTIAL claims and
+BROKEN + RISK impacts; Doc errors counts WRONG + FABRICATED + STALE docs. Each open PR row has a
 **Review now** / **Re-review** button that runs the review synchronously using
 the repo's auto-review config (skip-human + post-comment flags from
 `autoreview.yml`).

@@ -76,8 +76,15 @@ marked comment), so re-review never spams.
 
 - `gh api` failure (auth, rate limit) → log `POLL-ERROR` for that repo and
   continue to the next repo (no hot retry); the next pass retries
+- Repeated failure on one repo (deleted, renamed, 404) → per-repo counter in
+  `_repo_failures`; from the 3rd consecutive failure the log line carries
+  `(skipping: N consecutive failures)` so a dead repo stops looking like a new
+  incident every pass. A successful fetch resets the counter to 0
 - One PR failing (model/agent error) → log `FAILED`, continue with other PRs
-- Lock file `autoreview.lock` — prevents two concurrent pollers (daemon + cron)
+- Lock file `autoreview.lock` — prevents two concurrent pollers (daemon + cron).
+  Dead PID → reclaimed. Alive PID but the lock is older than 4h → PID reuse or a
+  hung pass, so it is stolen with a warning. Unparseable lock → reclaimed with a
+  warning (returning "held" there would wedge the poller silently forever)
 - Missing API key → clear error at startup, exit 3 (consistent with run.py)
 
 ## Scheduling (macOS)
