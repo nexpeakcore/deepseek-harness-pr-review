@@ -121,6 +121,81 @@ def _bump_rounds(session_dir: Path) -> None:
     path.write_text(str(current + 1))
 
 
+def _review_lock_path(session_dir: Path) -> Path:
+    return session_dir / "review.lock"
+
+
+def _review_lock_alive(lock: Path) -> bool:
+    """True if review.lock records a PID that is still running.
+
+    Corrupt/unparseable lock, or a PID that no longer exists → stale. A PID
+    owned by another user raises PermissionError from kill(pid, 0), which
+    means the process IS alive — same rule as web/metrics.review_process_info.
+    """
+    import os as _os
+
+    try:
+        pid = int(json.loads(lock.read_text()).get("pid", 0))
+    except (ValueError, OSError, AttributeError):
+        return False
+    if pid <= 0:
+        return False
+    try:
+        _os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _acquire_review_lock(session_dir: Path) -> bool:
+    """Create the per-PR review lock (JSON {pid, started_at}).
+
+    Same file the web dashboard and the autoreview poller read, so manual CLI
+    reviews, web-triggered reviews, and the poller mutually exclude each other
+    on the same PR (shared workspace, shared comment). Returns False if a live
+    review already holds the lock.
+
+    A lock whose PID is dead is stale (review crashed / was SIGKILLed) and is
+    reclaimed: otherwise one hard crash would wedge that PR forever for the
+    CLI and the poller, which call this directly and have no dashboard to
+    clean up after them.
+    """
+    import os as _os
+    import time as _time
+
+    lock = _review_lock_path(session_dir)
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    for attempt in (1, 2):
+        try:
+            fd = _os.open(lock, _os.O_CREAT | _os.O_EXCL | _os.O_WRONLY)
+        except FileExistsError:
+            if attempt == 2 or _review_lock_alive(lock):
+                return False
+            print("[harness] reclaiming stale review.lock (PID dead — "
+                  "previous review crashed)", file=sys.stderr)
+            try:
+                lock.unlink()
+            except FileNotFoundError:
+                pass  # another process won the race; retry decides
+            except OSError:
+                return False
+            continue
+        with _os.fdopen(fd, "w") as f:
+            json.dump({"pid": _os.getpid(),
+                       "started_at": _time.strftime("%Y-%m-%dT%H:%M:%S")}, f)
+        return True
+    return False
+
+
+def _release_review_lock(session_dir: Path) -> None:
+    try:
+        _review_lock_path(session_dir).unlink()
+    except FileNotFoundError:
+        pass
+
+
 def _version() -> int:
     """Print the installed version."""
     try:
@@ -224,6 +299,17 @@ def main(argv: list[str] | None = None) -> int:
     session_dir = cfg.session_root / owner / repo / f"pr-{num}"
     session_dir.mkdir(parents=True, exist_ok=True)
 
+    # Per-PR lock: manual CLI, web trigger, và poller loại trừ nhau trên cùng
+    # một PR (workspace dùng chung, comment idempotent). Fixtures mode không
+    # chạy verify nên không cần lock.
+    locked = False
+    if args.fixtures is None:
+        if not _acquire_review_lock(session_dir):
+            print("review already running for this PR "
+                  "(review.lock held)", file=sys.stderr)
+            return 1
+        locked = True
+
     try:
         if args.fixtures is not None:
             for name in ("snapshot.json", "claims.json", "findings.json"):
@@ -278,6 +364,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Error: {e}", file=sys.stderr)
         _write_failed_report(session_dir, e)
         return 1
+    finally:
+        if locked:
+            _release_review_lock(session_dir)
 
 
 if __name__ == "__main__":

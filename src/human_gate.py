@@ -32,7 +32,12 @@ def run_gate(findings: dict, session_dir: Path, interactive: bool = True) -> lis
     answers: list[dict] = []
     for question, kind in _collect_questions(findings):
         if interactive:
-            answer = input(f"[harness] {question} (y/n or free text): ").strip()
+            try:
+                answer = input(f"[harness] {question} (y/n or free text): ").strip()
+            except EOFError:
+                # Không có stdin (web-triggered review, CI, daemon) — không crash,
+                # đánh dấu SKIPPED để pipeline tiếp tục.
+                answer = "SKIPPED"
         else:
             answer = "SKIPPED"
         answers.append({"question": question, "kind": kind, "answer": answer})

@@ -20,6 +20,11 @@ from src.gh import gh_available, run_gh
 CONFIG_PATH = Path("autoreview.yml")
 LOCK_PATH = Path("autoreview.lock")
 
+# Backoff trạng thái lỗi per-repo (repo 404/đã xóa): đếm lỗi liên tiếp, reset
+# khi fetch thành công. Sau _REPO_FAILURE_LIMIT lần → log gọn + tiếp tục bỏ qua.
+_repo_failures: dict[str, int] = {}
+_REPO_FAILURE_LIMIT = 3
+
 
 def decide_pr(session_root: Path, owner: str, repo: str, n: int,
               head_sha: str) -> str:
@@ -74,19 +79,37 @@ def fetch_open_prs(owner: str, repo: str, gh=run_gh) -> list[dict]:
 
 
 def _acquire_lock() -> bool:
-    # Lock cũ mà PID chết → dọn và giành lại
+    # Lock cũ mà PID chết → dọn và giành lại. PID sống nhưng lock quá già
+    # (> 4h: một pass bình thường không bao giờ lâu vậy) → PID bị recycle
+    # bởi tiến trình khác hoặc tiến trình treo → cướp lock với cảnh báo.
     if LOCK_PATH.exists():
         try:
             pid = int(LOCK_PATH.read_text().strip() or "0")
-            if pid > 0:
-                os.kill(pid, 0)  # alive → từ chối
-            else:
-                LOCK_PATH.unlink()
-        except ProcessLookupError:
+            alive = pid > 0
+            if alive:
+                try:
+                    os.kill(pid, 0)
+                except ProcessLookupError:
+                    alive = False
+            if alive and _lock_age_seconds() < _MAX_LOCK_AGE:
+                return False
+            if alive:
+                print(f"[autoreview] stealing stale lock (age "
+                      f"{int(_lock_age_seconds())}s, pid {pid} still alive — "
+                      f"PID reuse or hung process)", file=sys.stderr)
             LOCK_PATH.unlink()
         except FileNotFoundError:
             pass
-        except (PermissionError, ValueError):
+        except ValueError:
+            # Lock hỏng/truncate (không parse được PID) → không có chủ hợp lệ.
+            # Trả False ở đây sẽ kẹt poller vĩnh viễn và im lặng → dọn + cảnh báo.
+            print("[autoreview] removing corrupt autoreview.lock "
+                  "(unparseable pid)", file=sys.stderr)
+            try:
+                LOCK_PATH.unlink()
+            except OSError:
+                return False
+        except PermissionError:
             return False
     try:
         fd = os.open(LOCK_PATH, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
@@ -95,6 +118,16 @@ def _acquire_lock() -> bool:
         return True
     except FileExistsError:
         return False
+
+
+_MAX_LOCK_AGE = 4 * 3600  # 4h
+
+
+def _lock_age_seconds() -> float:
+    try:
+        return time.time() - LOCK_PATH.stat().st_mtime
+    except OSError:
+        return 0.0
 
 
 def _release_lock() -> None:
@@ -128,11 +161,21 @@ def run_pass(cfg: dict, session_root: Path, dry_run: bool = False,
     """One poll pass over all auto repos. Returns count of dispatched."""
     dispatched = 0
     for owner, repo in auto_repos(cfg):
+        key = f"{owner}/{repo}"
         try:
             prs = fetch_open_prs(owner, repo, gh=gh)
         except RuntimeError as e:
-            print(f"POLL-ERROR {owner}/{repo}: {e}", file=sys.stderr)
+            # Backoff: repo 404/không tồn tại (đã xóa/đổi tên) — đừng spam log
+            # mỗi pass. Sau N lần lỗi liên tiếp, chỉ log gọn mỗi pass.
+            _repo_failures[key] = _repo_failures.get(key, 0) + 1
+            n_fail = _repo_failures[key]
+            if n_fail >= _REPO_FAILURE_LIMIT:
+                print(f"POLL-ERROR {key}: {e} "
+                      f"(skipping: {n_fail} consecutive failures)", file=sys.stderr)
+            else:
+                print(f"POLL-ERROR {key}: {e}", file=sys.stderr)
             continue
+        _repo_failures[key] = 0
         plans = plan_reviews(session_root, owner, repo, prs,
                              drafts=cfg.get("drafts", False),
                              skip_bots=cfg.get("skip_bots", True))

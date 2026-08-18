@@ -194,6 +194,60 @@ def test_acquire_lock_alive(tmp_path, monkeypatch):
     assert _acquire_lock() is False
 
 
+def test_acquire_lock_steals_very_old_lock(tmp_path, monkeypatch):
+    """PID sống nhưng lock quá già (PID bị recycle / tiến trình treo) → cướp."""
+    import time
+
+    monkeypatch.setattr("src.autoreview.LOCK_PATH", tmp_path / "autoreview.lock")
+    lock = tmp_path / "autoreview.lock"
+    lock.write_text(str(os.getpid()))  # PID sống
+    old = time.time() - 5 * 3600  # 5h trước (> _MAX_LOCK_AGE 4h)
+    os.utime(lock, (old, old))
+    assert _acquire_lock() is True
+    _release_lock()
+
+
+def test_run_pass_backoff_after_repeated_failures(tmp_path, monkeypatch, capsys):
+    """Repo lỗi liên tiếp → log gọn (backoff) thay vì spam mỗi pass."""
+    from src.autoreview import _repo_failures
+
+    _repo_failures.clear()
+    root = tmp_path / "sessions"
+    root.mkdir(parents=True)
+    cfg_path = tmp_path / "autoreview.yml"
+    cfg_path.write_text(
+        "org: sample-org\nrepos:\n  ghost: auto\n  alive: auto\n")
+    cfg = load_config(cfg_path)
+
+    def fake_gh(args, **kw):
+        repo_ref = args[1].split("?")[0].split("repos/")[1].removesuffix("/pulls")
+        if repo_ref == "sample-org/ghost":
+            raise RuntimeError("gh api failed: gh: Not Found (HTTP 404)")
+        return [{"number": 1, "head": {"sha": "a"}, "draft": False}]
+
+    monkeypatch.setattr("src.autoreview._dispatch",
+                        lambda c, o, r, n, sha: 0)
+
+    # pass 1, 2: lỗi thường (chưa đạt ngưỡng 3)
+    count = run_pass(cfg, root, dry_run=False, gh=fake_gh)
+    assert count == 1  # alive repo vẫn dispatch được
+    captured = capsys.readouterr()
+    assert "ghost" in captured.err and "skipping" not in captured.err
+
+    run_pass(cfg, root, dry_run=False, gh=fake_gh)
+    captured = capsys.readouterr()
+    assert "skipping" not in captured.err
+
+    # pass 3+: log gọn với counter (ngưỡng _REPO_FAILURE_LIMIT = 3)
+    run_pass(cfg, root, dry_run=False, gh=fake_gh)
+    captured = capsys.readouterr()
+    assert "skipping: 3 consecutive failures" in captured.err
+
+    run_pass(cfg, root, dry_run=False, gh=fake_gh)
+    captured = capsys.readouterr()
+    assert "skipping: 4 consecutive failures" in captured.err
+
+
 def test_decide_pr_incomplete_review(tmp_path):
     # head khớp nhưng snapshot mới hơn findings (re-review fail giữa chừng)
     root = tmp_path / "sessions"

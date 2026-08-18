@@ -168,7 +168,8 @@ def test_open_prs_merge(tmp_path):
     _write_session(root, "o", "r", 7, snapshot=SNAPSHOT,
                    findings=EMPTY_FINDINGS)
     (root / "o" / "r" / "pr-7" / "rounds.txt").write_text("2")
-    # pr-8: session dir có snapshot nhưng chưa có findings → Reviewing…
+    # pr-8: session dir có snapshot nhưng chưa có findings, không có lock sống
+    # → review bị gián đoạn → failed
     d8 = root / "o" / "r" / "pr-8"
     d8.mkdir(parents=True)
     (d8 / "snapshot.json").write_text(json.dumps(SNAPSHOT))
@@ -188,7 +189,7 @@ def test_open_prs_merge(tmp_path):
     assert by_num[7]["status"] == "reviewed"
     assert by_num[7]["rounds"] == 2
     assert by_num[7]["draft"] is False
-    assert by_num[8]["status"] == "reviewing"
+    assert by_num[8]["status"] == "failed"
     assert by_num[9]["status"] == "not_reviewed"
     # sort theo number desc
     assert [r["pr"] for r in rows] == [9, 8, 7]

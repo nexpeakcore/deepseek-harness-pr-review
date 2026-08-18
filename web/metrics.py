@@ -196,7 +196,8 @@ def open_prs(session_root: Path, owner: str, repo: str, gh=None) -> list[dict]:
     """Merge GitHub open PRs with session state.
 
     Returns rows: {pr, title, draft, status, rounds, bugs, doc_errors,
-    unavailable} sorted by pr desc. status: reviewed | reviewing | not_reviewed.
+    unavailable} sorted by pr desc.
+    status: reviewed | reviewing | failed | not_reviewed.
     gh failure → rows for reviewed sessions only, unavailable=True.
     """
     if gh is None:
@@ -241,13 +242,13 @@ def open_prs(session_root: Path, owner: str, repo: str, gh=None) -> list[dict]:
                 "unavailable": unavailable,
             })
         elif d.exists():
-            info = review_process_info(d)
+            # Session tồn tại nhưng không có findings và không có review đang
+            # chạy → review bị gián đoạn (crash/SIGKILL/treo) → đánh dấu failed
+            # thay vì "reviewing" vĩnh viễn.
             rows.append({
                 "pr": n, "title": p.get("title", ""),
                 "draft": bool(p.get("draft")),
-                "status": "reviewing", "rounds": None,
-                "pid": info["pid"] if info else None,
-                "started_at": info["started_at"] if info else None,
+                "status": "failed", "rounds": None,
                 "bugs": None, "doc_errors": None,
                 "unavailable": unavailable,
             })

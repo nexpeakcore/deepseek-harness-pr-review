@@ -506,3 +506,36 @@ def test_repo_page_configured_auto_shows_switch_manual(tmp_path, monkeypatch):
     assert "AUTO" in resp.text
     assert "Switch to MANUAL" in resp.text
     assert "(default)" not in resp.text
+
+
+def test_pr_page_failed_state_matches_repo_list(tmp_path, monkeypatch):
+    """Session dở dang, không lock sống → 'Failed · interrupted', giống repo list."""
+    monkeypatch.setenv("DSH_SESSION_ROOT", str(tmp_path / "sessions"))
+    session_dir = tmp_path / "sessions" / "sample-org" / "sample-app" / "pr-78"
+    session_dir.mkdir(parents=True)
+    (session_dir / "snapshot.json").write_text(json.dumps({"pr": 78}))
+    monkeypatch.setattr("src.gh.run_gh",
+                        lambda args, **kw: {"number": 78, "title": "T",
+                                            "user": {"login": "a"},
+                                            "base": {"ref": "main"},
+                                            "head": {"ref": "x"}})
+    client = TestClient(app)
+    resp = client.get("/repos/sample-org/sample-app/pr/78")
+    assert resp.status_code == 200
+    assert "Failed · interrupted" in resp.text
+    assert "Not reviewed yet" not in resp.text
+
+
+def test_pr_page_never_reviewed_still_says_not_reviewed(tmp_path, monkeypatch):
+    """Không có session dir → vẫn là 'Not reviewed yet', không phải failed."""
+    monkeypatch.setenv("DSH_SESSION_ROOT", str(tmp_path / "sessions"))
+    monkeypatch.setattr("src.gh.run_gh",
+                        lambda args, **kw: {"number": 79, "title": "T",
+                                            "user": {"login": "a"},
+                                            "base": {"ref": "main"},
+                                            "head": {"ref": "x"}})
+    client = TestClient(app)
+    resp = client.get("/repos/sample-org/sample-app/pr/79")
+    assert resp.status_code == 200
+    assert "Not reviewed yet" in resp.text
+    assert "Failed · interrupted" not in resp.text

@@ -138,6 +138,88 @@ def test_verify_run_bumps_rounds(tmp_path, monkeypatch):
     assert rounds_file.read_text().strip() == "2"
 
 
+def test_main_creates_and_releases_review_lock(tmp_path, monkeypatch):
+    """Real run → review.lock được tạo (ngăn poller trùng) và luôn được giải phóng."""
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")
+    monkeypatch.setenv("DSH_SESSION_ROOT", str(tmp_path / "sessions"))
+    monkeypatch.setattr("src.run.gh_available", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda prompt: "n")
+
+    fake_snapshot = {"owner": "demo", "repo": "app", "pr": 7, "title": "T",
+                     "body": "B", "author": "a", "base": "main", "head": "x",
+                     "labels": [], "files": [], "commits": [], "threads": []}
+    fake_findings = {"claims": [], "docs": [], "impact": [], "threads": [],
+                     "unresolved_questions": []}
+
+    def fake_build_snapshot(owner, repo, n, session_dir, gh=None):
+        (session_dir / "snapshot.json").write_text(json.dumps(fake_snapshot))
+        return fake_snapshot
+
+    def fake_extract_claims(snapshot, cfg, session_dir, chat=None):
+        (session_dir / "claims.json").write_text(json.dumps([]))
+        return []
+
+    def fake_run_verify(cfg, workspace, session_dir, snapshot, claims):
+        # Trong lúc verify, lock phải tồn tại
+        assert (session_dir / "review.lock").exists()
+        return fake_findings
+
+    monkeypatch.setattr("src.snapshot.build_snapshot", fake_build_snapshot)
+    monkeypatch.setattr("src.claims.extract_claims", fake_extract_claims)
+    monkeypatch.setattr("src.run.setup_workspace", lambda *a, **k: None)
+    monkeypatch.setattr("src.run.run_verify", fake_run_verify)
+
+    session_dir = tmp_path / "sessions" / "demo" / "app" / "pr-7"
+    assert main(["demo/app", "7", "--no-post"]) == 0
+    # Lock đã được giải phóng sau run
+    assert not (session_dir / "review.lock").exists()
+
+
+def test_main_refuses_when_review_lock_held(tmp_path, monkeypatch):
+    """Review khác đang chạy (lock sống) → từ chối, không chạy pipeline."""
+    import os
+
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")
+    monkeypatch.setenv("DSH_SESSION_ROOT", str(tmp_path / "sessions"))
+    monkeypatch.setattr("src.run.gh_available", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda prompt: "n")
+
+    session_dir = tmp_path / "sessions" / "demo" / "app" / "pr-7"
+    session_dir.mkdir(parents=True)
+    (session_dir / "review.lock").write_text(
+        json.dumps({"pid": os.getpid(),
+                    "started_at": "2026-08-17T00:00:00"}))
+
+    called = {"verify": 0}
+
+    def fake_run_verify(*a, **k):
+        called["verify"] += 1
+        return {"claims": [], "docs": [], "impact": [], "threads": [],
+                "unresolved_questions": []}
+
+    monkeypatch.setattr("src.snapshot.build_snapshot",
+                        lambda *a, **k: {"pr": 7, "title": "T"})
+    monkeypatch.setattr("src.claims.extract_claims", lambda *a, **k: [])
+    monkeypatch.setattr("src.run.run_verify", fake_run_verify)
+
+    assert main(["demo/app", "7", "--no-post"]) == 1
+    assert called["verify"] == 0
+
+
+def test_fixtures_mode_skips_review_lock(tmp_path, monkeypatch):
+    """Fixtures mode không chạy verify → không tạo lock."""
+    fixtures = tmp_path / "fixtures"
+    fixtures.mkdir()
+    for name, data in FIXTURES.items():
+        (fixtures / name).write_text(json.dumps(data))
+    monkeypatch.setenv("DSH_SESSION_ROOT", str(tmp_path / "sessions"))
+
+    assert main(["demo/app", "7", "--fixtures", str(fixtures),
+                 "--no-post"]) == 0
+    assert not (tmp_path / "sessions" / "demo" / "app" / "pr-7"
+                / "review.lock").exists()
+
+
 def test_doctor_ready(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")
     monkeypatch.setattr("src.run.gh_available", lambda: True)
@@ -237,3 +319,56 @@ def test_web_command_missing_uvicorn(monkeypatch, capsys):
     code = main(["web"])
     assert code == 1
     assert "web" in capsys.readouterr().err
+
+
+def test_main_reclaims_stale_review_lock(tmp_path, monkeypatch):
+    """Lock của review đã crash (PID chết) → thu hồi, không kẹt PR vĩnh viễn."""
+    import os
+
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")
+    monkeypatch.setenv("DSH_SESSION_ROOT", str(tmp_path / "sessions"))
+    monkeypatch.setattr("src.run.gh_available", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda prompt: "n")
+
+    session_dir = tmp_path / "sessions" / "demo" / "app" / "pr-7"
+    session_dir.mkdir(parents=True)
+    dead = os.fork()
+    if dead == 0:
+        os._exit(0)
+    os.waitpid(dead, 0)  # PID chắc chắn đã chết
+    (session_dir / "review.lock").write_text(
+        json.dumps({"pid": dead, "started_at": "2026-08-17T00:00:00"}))
+
+    fake_snapshot = {"owner": "demo", "repo": "app", "pr": 7, "title": "T",
+                     "body": "B", "author": "a", "base": "main", "head": "x",
+                     "labels": [], "files": [], "commits": [], "threads": []}
+    fake_findings = {"claims": [], "docs": [], "impact": [], "threads": [],
+                     "unresolved_questions": []}
+
+    def fake_build_snapshot(owner, repo, n, session_dir, gh=None):
+        (session_dir / "snapshot.json").write_text(json.dumps(fake_snapshot))
+        return fake_snapshot
+
+    def fake_extract_claims(snapshot, cfg, session_dir, chat=None):
+        (session_dir / "claims.json").write_text(json.dumps([]))
+        return []
+
+    monkeypatch.setattr("src.snapshot.build_snapshot", fake_build_snapshot)
+    monkeypatch.setattr("src.claims.extract_claims", fake_extract_claims)
+    monkeypatch.setattr("src.run.setup_workspace", lambda *a, **k: None)
+    monkeypatch.setattr("src.run.run_verify",
+                        lambda *a, **k: fake_findings)
+
+    assert main(["demo/app", "7", "--no-post"]) == 0
+    assert not (session_dir / "review.lock").exists()
+
+
+def test_review_lock_corrupt_is_treated_as_stale(tmp_path):
+    """review.lock rác (truncate/ghi dở) → coi là stale, không kẹt."""
+    from src.run import _acquire_review_lock, _release_review_lock
+
+    session_dir = tmp_path / "pr-7"
+    session_dir.mkdir()
+    (session_dir / "review.lock").write_text("not json at all")
+    assert _acquire_review_lock(session_dir) is True
+    _release_review_lock(session_dir)

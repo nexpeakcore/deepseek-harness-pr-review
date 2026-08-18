@@ -36,3 +36,20 @@ def test_run_gate_writes_answers(tmp_path, monkeypatch):
     saved = json.loads((session_dir / "answers.json").read_text())
     assert len(saved) == 3
     assert all(set(a.keys()) == {"question", "kind", "answer"} for a in saved)
+
+
+def test_run_gate_eof_no_stdin_marks_skipped(tmp_path, monkeypatch):
+    """Không có stdin (web trigger / daemon / CI) → không crash, answer = SKIPPED."""
+    findings = {
+        "claims": [{"id": "C1", "status": "UNVERIFIED", "evidence": [], "note": ""}],
+        "docs": [], "impact": [], "threads": [],
+        "unresolved_questions": ["Any doubt?"],
+    }
+
+    def raise_eof(prompt):
+        raise EOFError
+
+    monkeypatch.setattr("builtins.input", raise_eof)
+    answers = run_gate(findings, tmp_path / "s")
+    assert all(a["answer"] == "SKIPPED" for a in answers)
+    assert len(answers) == 2

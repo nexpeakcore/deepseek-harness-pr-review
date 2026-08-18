@@ -233,6 +233,27 @@ def build_comment(snapshot: dict, claims: list[dict], findings: dict,
     )
 
 
+def _post_body(gh, args_prefix: list[str], body: str) -> None:
+    """POST/PATCH with the body read from a temp file.
+
+    `-F body=@file` keeps the payload out of the argv, so a very large HTML
+    comment (many claims/docs) cannot hit ARG_MAX or shell-quoting limits.
+    """
+    import os
+    import tempfile
+
+    fd, path = tempfile.mkstemp(prefix="hpr-comment-", suffix=".md")
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(body)
+        gh([*args_prefix, "-F", f"body=@{path}"])
+    finally:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+
+
 def post_comment(owner: str, repo: str, n: int, body: str, *,
                  gh=run_gh, list_comments=None) -> bool:
     """Post a comment if there is no marker; otherwise UPDATE the existing comment (keep a single comment).
@@ -243,9 +264,8 @@ def post_comment(owner: str, repo: str, n: int, body: str, *,
         list_comments = lambda: gh(["api", f"repos/{owner}/{repo}/issues/{n}/comments", "--paginate"])
     for c in list_comments():
         if MARKER in c.get("body", ""):
-            gh(["api", f"repos/{owner}/{repo}/issues/comments/{c['id']}",
-                "-X", "PATCH", "-f", f"body={body}"])
+            _post_body(gh, ["api", f"repos/{owner}/{repo}/issues/comments/{c['id']}",
+                            "-X", "PATCH"], body)
             return False
-    gh(["api", f"repos/{owner}/{repo}/issues/{n}/comments",
-        "-f", f"body={body}"])
+    _post_body(gh, ["api", f"repos/{owner}/{repo}/issues/{n}/comments"], body)
     return True

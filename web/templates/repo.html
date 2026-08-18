@@ -45,6 +45,8 @@ reviewed automatically. Click <b>Review now</b> to run the first one.</p>{% endi
           <span class="verdict v-pass">Reviewed · {{ p.rounds }} round{{ 's' if p.rounds != 1 }}</span>
         {% elif p.status == 'reviewing' %}
           <span class="verdict v-partial">Reviewing…{% if p.pid %} (PID {{ p.pid }}{% if p.started_at %}, started {{ p.started_at }}{% endif %}){% endif %}</span>
+        {% elif p.status == 'failed' %}
+          <span class="verdict v-fail">Failed · interrupted</span>
         {% else %}
           <span class="verdict v-unlisted">Not reviewed</span>
         {% endif %}

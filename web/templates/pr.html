@@ -14,6 +14,15 @@
   <p class="muted">A review session is running for this PR. The log below
   updates live; the page reloads automatically when the review finishes.</p>
 </div>
+{% elif failed %}
+<div class="config-block">
+  <h2><span class="verdict v-fail">Failed · interrupted</span></h2>
+  <p class="muted">A review started for this PR but never produced findings —
+  the process crashed or was killed. Run it again to retry.</p>
+  <button class="tab-btn review-btn" id="review-now-btn"
+          onclick="triggerReview({{ pr_info.pr }}, this)">Review again</button>
+  <div id="review-msg" class="review-msg"></div>
+</div>
 {% else %}
 <div class="config-block">
   <h2>Not reviewed yet</h2>

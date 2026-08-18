@@ -1,7 +1,6 @@
 """FastAPI app: PR review dashboard + repo auto/manual config management."""
 import json
 import os
-import time
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
@@ -157,8 +156,13 @@ def pr_page(request: Request, owner: str, repo: str, pr: int):
             return templates.TemplateResponse(
                 request, "pr.html",
                 {"detail": None, "pr_info": pr_info, "not_reviewed": True,
-                 "reviewing": True, "review_pid": reviewing["pid"],
+                 "reviewing": True, "failed": False,
+                 "review_pid": reviewing["pid"],
                  "repo_owner": owner, "repo_name": repo})
+        # Session tồn tại nhưng chưa có findings và không có lock sống →
+        # review bị gián đoạn. Cùng trạng thái repo list hiện "Failed ·
+        # interrupted"; hai trang phải nói giống nhau.
+        failed = session_dir.exists()
         # PR chưa review → hiện placeholder + nút Review now (title từ gh)
         from src.gh import run_gh
 
@@ -174,11 +178,13 @@ def pr_page(request: Request, owner: str, repo: str, pr: int):
         return templates.TemplateResponse(
             request, "pr.html",
             {"detail": None, "pr_info": pr_info, "not_reviewed": True,
-             "reviewing": False, "repo_owner": owner, "repo_name": repo})
+             "reviewing": False, "failed": failed,
+             "repo_owner": owner, "repo_name": repo})
     return templates.TemplateResponse(
         request, "pr.html",
         {"detail": detail, "pr_info": None, "not_reviewed": False,
-         "reviewing": False, "repo_owner": owner, "repo_name": repo})
+         "reviewing": False, "failed": False,
+         "repo_owner": owner, "repo_name": repo})
 
 
 @app.get("/api/config")
@@ -252,17 +258,6 @@ def api_remove_repo(repo: str):
 
 def _review_lock_path(session_root: Path, owner: str, repo: str, n: int) -> Path:
     return session_root / owner / repo / f"pr-{n}" / "review.lock"
-
-
-def _write_review_lock(lock: Path) -> None:
-    """Atomically create the review lock with pid + started_at metadata."""
-    data = json.dumps({"pid": os.getpid(),
-                       "started_at": time.strftime("%Y-%m-%dT%H:%M:%S")})
-    fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-    try:
-        os.write(fd, data.encode())
-    finally:
-        os.close(fd)
 
 
 def review_status(session_root: Path, owner: str, repo: str, n: int) -> dict:
@@ -344,16 +339,11 @@ def trigger_review(owner: str, repo: str, pr: int):
             detail=(f"review already running — PID {status['pid']}, "
                     f"started {status['started_at']} "
                     f"({status['elapsed_seconds']}s ago)"))
-    if lock.exists():  # stale lock → dọn và chạy lại
+    if lock.exists():  # stale lock (PID chết) → dọn; run.py sẽ tạo lock mới
         try:
             lock.unlink()
         except OSError:
             pass
-    try:
-        _write_review_lock(lock)
-    except FileExistsError:
-        raise HTTPException(status_code=409,
-                            detail=f"review already running for #{pr}")
 
     import contextlib
 
@@ -368,11 +358,16 @@ def trigger_review(owner: str, repo: str, pr: int):
                 if not cfg.get("post_comment", True):
                     args.append("--no-post")
                 exit_code = run_main(args)
-    finally:
+    except Exception:
+        # run.py tự dọn review.lock trong finally; nếu nó chưa kịp tạo lock
+        # (lỗi trước pipeline), dọn ở đây để tránh lock mồ côi.
         try:
-            lock.unlink()
-        except FileNotFoundError:
+            if lock.exists() and not review_status(_session_root(), owner,
+                                                   repo, pr)["running"]:
+                lock.unlink()
+        except OSError:
             pass
+        raise
 
     if exit_code != 0:
         raise HTTPException(

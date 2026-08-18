@@ -79,8 +79,11 @@ def test_post_comment_updates_via_gh(monkeypatch):
     posted = post_comment("demo", "app", 7, "new", gh=fake_gh,
                           list_comments=lambda: existing)
     assert posted is False
-    assert seen == [["api", "repos/demo/app/issues/comments/42",
-                     "-X", "PATCH", "-f", "body=new"]]
+    # body được gửi qua temp file (-F body=@...) để tránh ARG_MAX
+    assert seen[0][:4] == ["api", "repos/demo/app/issues/comments/42",
+                           "-X", "PATCH"]
+    assert seen[0][4] == "-F"
+    assert seen[0][5].startswith("body=@")
 
 
 def test_post_comment_posts_when_no_marker(monkeypatch):
@@ -132,8 +135,9 @@ def test_post_comment_default_lists_paginated_and_posts_dash_f():
 
     post_comment("demo", "app", 7, "body", gh=fake_gh)
     assert "--paginate" in seen[0]
-    assert "-f" in seen[1]
-    assert "-F" not in seen[1]
+    # body qua temp file để tránh ARG_MAX
+    assert "-F" in seen[1]
+    assert seen[1][seen[1].index("-F") + 1].startswith("body=@")
 
 
 def test_build_comment_summary_badges():

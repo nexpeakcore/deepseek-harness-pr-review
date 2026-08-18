@@ -22,7 +22,10 @@
 - id: sandbox-policy
   name: '@deepseek-ai/dsh-sandbox-policy'
   config:
-    mode: danger-full-access
+    # workspace-write: agent chỉ ghi trong workspace (findings.json) — không
+    # cho phép sửa file ngoài workspace kể cả khi repo bị prompt-inject
+    # (PR body / code trong repo là untrusted input).
+    mode: workspace-write
     workspaceRoot: !!js process.env.DSH_CWD ?? process.cwd()
 
 - id: subprocess

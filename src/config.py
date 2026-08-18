@@ -9,18 +9,22 @@ from pathlib import Path
 
 
 def _load_dotenv() -> None:
-    path = Path(".env")
-    if not path.exists():
-        return
-    for line in path.read_text().splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
+    # CWD .env (dev checkout / project dir) trước, rồi home .env cho bản cài
+    # qua one-liner installer (chạy từ bất kỳ đâu). Biến môi trường thật luôn
+    # thắng cả hai.
+    candidates = [Path(".env"), Path.home() / ".harness-pr-review" / ".env"]
+    for path in candidates:
+        if not path.exists():
             continue
-        key, _, value = line.partition("=")
-        key = key.strip()
-        value = value.strip().strip('"').strip("'")
-        if key and key not in os.environ:
-            os.environ[key] = value
+        for line in path.read_text().splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            key = key.strip()
+            value = value.strip().strip('"').strip("'")
+            if key and key not in os.environ:
+                os.environ[key] = value
 
 
 _load_dotenv()
