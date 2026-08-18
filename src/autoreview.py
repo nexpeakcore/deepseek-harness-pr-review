@@ -163,6 +163,7 @@ def _dispatch(cfg: dict, owner: str, repo: str, n: int,
         force=True,
         skip_human=cfg.get("skip_human", True),
         no_post=not cfg.get("post_comment", True),
+        no_ping=not cfg.get("ping_comment", True),
         timeout_seconds=cfg.get("review_timeout_minutes", 30) * 60)
 
 

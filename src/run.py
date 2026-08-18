@@ -13,7 +13,8 @@ from src.config import load_config
 from src.gh import gh_available, run_gh
 from src.review_proc import review_lock_alive
 from src.human_gate import run_gate
-from src.synthesize import build_comment, build_report, post_comment
+from src.synthesize import (build_comment, build_ping, build_report,
+                            find_report_comment, post_comment, post_ping)
 from src.verify import run_verify, setup_workspace
 
 
@@ -110,6 +111,26 @@ def _write_failed_report(session_dir: Path, error: Exception) -> None:
         "",
     ]
     (session_dir / "report.md").write_text("\n".join(lines))
+
+
+def _post_round_ping(owner: str, repo: str, num: int, snapshot: dict,
+                     findings: dict, session_dir: Path) -> None:
+    """Post the short per-round comment. Never fails the review.
+
+    The full report comment is edited in place and GitHub notifies nobody about
+    an edit, so this new comment is the only thing that actually reaches a
+    subscriber. Losing the ping is annoying; losing the review because the ping
+    failed would be worse.
+    """
+    try:
+        report = find_report_comment(owner, repo, num)
+        post_ping(owner, repo, num,
+                  build_ping(snapshot, findings,
+                             rounds=_read_rounds(session_dir),
+                             report_url=(report or {}).get("html_url")))
+        print("Posted round ping.")
+    except (RuntimeError, OSError) as e:
+        print(f"warning: could not post round ping: {e}", file=sys.stderr)
 
 
 def _read_rounds(session_dir: Path) -> int | None:
@@ -229,6 +250,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="re-run phases that already have results")
     parser.add_argument("--no-post", action="store_true",
                         help="don't post a comment on the PR")
+    parser.add_argument("--no-ping", action="store_true",
+                        help="don't post the short per-round comment")
     parser.add_argument("--dry-run", action="store_true",
                         help="only build the report, don't post")
     parser.add_argument("--fixtures", type=Path, default=None,
@@ -345,6 +368,9 @@ def main(argv: list[str] | None = None) -> int:
             print("Posted comment to PR.")
         else:
             print("Comment exists — updated with full report.")
+        if not args.no_ping:
+            _post_round_ping(owner, repo, int(num), snapshot, findings,
+                             session_dir)
         return 0
     except (RuntimeError, ValueError, OSError) as e:
         print(f"Error: {e}", file=sys.stderr)

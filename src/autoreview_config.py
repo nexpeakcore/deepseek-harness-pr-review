@@ -16,6 +16,9 @@ DEFAULTS = {
     "skip_human": True,
     "drafts": False,
     "skip_bots": True,
+    # Comment ngắn mỗi vòng: thứ duy nhất thật sự tạo notification, vì
+    # comment báo cáo đầy đủ được sửa tại chỗ và GitHub không báo khi edit.
+    "ping_comment": True,
     # Reviews đồng thời trong 1 pass. Mặc định 1 = tuần tự (hành vi cũ).
     # Mỗi review là 1 tiến trình riêng nên an toàn khi >1; trần thực tế là
     # API concurrency chứ không phải CPU (~80% thời gian là chờ model).
