@@ -291,3 +291,103 @@ def test_main_add_repo_bare_name_uses_org(tmp_path, monkeypatch):
     code = main(["--add-repo", "sample-app2", "--mode", "auto"])
     assert code == 0
     assert load_config(cfg_path)["repos"]["sample-app2"] == "auto"
+
+
+def test_run_pass_parallel_runs_prs_concurrently(tmp_path, monkeypatch):
+    """max_parallel > 1 → các PR chạy chồng nhau, không phải nối đuôi."""
+    import threading
+    import time as _time
+
+    from src.autoreview import _repo_failures
+
+    _repo_failures.clear()
+    root = tmp_path / "sessions"
+    root.mkdir(parents=True)
+    cfg_path = tmp_path / "autoreview.yml"
+    cfg_path.write_text("org: sample-org\nrepos:\n  app: auto\nmax_parallel: 3\n")
+    cfg = load_config(cfg_path)
+
+    def fake_gh(args, **kw):
+        return [{"number": i, "head": {"sha": "a"}, "draft": False}
+                for i in (1, 2, 3)]
+
+    live = []
+    peak = []
+    guard = threading.Lock()
+
+    def fake_dispatch(c, o, r, n, sha):
+        with guard:
+            live.append(n)
+            peak.append(len(live))
+        _time.sleep(0.2)
+        with guard:
+            live.remove(n)
+        return 0
+
+    monkeypatch.setattr("src.autoreview._dispatch", fake_dispatch)
+
+    started = _time.monotonic()
+    count = run_pass(cfg, root, dry_run=False, gh=fake_gh)
+    elapsed = _time.monotonic() - started
+
+    assert count == 3
+    assert max(peak) == 3          # cả 3 chạy cùng lúc
+    assert elapsed < 0.5           # tuần tự sẽ là ~0.6s
+
+
+def test_run_pass_sequential_by_default(tmp_path, monkeypatch):
+    """Không cấu hình max_parallel → 1 review một lúc (hành vi cũ)."""
+    import threading
+
+    from src.autoreview import _repo_failures
+
+    _repo_failures.clear()
+    root = tmp_path / "sessions"
+    root.mkdir(parents=True)
+    cfg_path = tmp_path / "autoreview.yml"
+    cfg_path.write_text("org: sample-org\nrepos:\n  app: auto\n")
+    cfg = load_config(cfg_path)
+    assert cfg["max_parallel"] == 1
+
+    def fake_gh(args, **kw):
+        return [{"number": i, "head": {"sha": "a"}, "draft": False}
+                for i in (1, 2, 3)]
+
+    live = []
+    peak = []
+    guard = threading.Lock()
+
+    def fake_dispatch(c, o, r, n, sha):
+        with guard:
+            live.append(n)
+            peak.append(len(live))
+            live.remove(n)
+        return 0
+
+    monkeypatch.setattr("src.autoreview._dispatch", fake_dispatch)
+    assert run_pass(cfg, root, dry_run=False, gh=fake_gh) == 3
+    assert max(peak) == 1
+
+
+def test_run_pass_parallel_counts_only_successes(tmp_path, monkeypatch):
+    """Một PR lỗi khi chạy song song → không chặn PR khác, không bị đếm."""
+    from src.autoreview import _repo_failures
+
+    _repo_failures.clear()
+    root = tmp_path / "sessions"
+    root.mkdir(parents=True)
+    cfg_path = tmp_path / "autoreview.yml"
+    cfg_path.write_text("org: sample-org\nrepos:\n  app: auto\nmax_parallel: 3\n")
+    cfg = load_config(cfg_path)
+
+    def fake_gh(args, **kw):
+        return [{"number": i, "head": {"sha": "a"}, "draft": False}
+                for i in (1, 2, 3)]
+
+    def fake_dispatch(c, o, r, n, sha):
+        if n == 2:
+            raise RuntimeError("boom")
+        return 0 if n == 1 else 1  # #3 exit khác 0
+
+    monkeypatch.setattr("src.autoreview._dispatch", fake_dispatch)
+    assert run_pass(cfg, root, dry_run=False, gh=fake_gh) == 1

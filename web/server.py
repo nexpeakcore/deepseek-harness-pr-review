@@ -11,7 +11,7 @@ from fastapi.templating import Jinja2Templates
 from src.autoreview_config import load_config as load_autoreview_config
 from src.autoreview_config import auto_repos, list_repos, remove_repo, set_repo_mode
 from src.config import load_config
-from src.run import main as run_main
+from src.review_proc import EXIT_TIMEOUT, run_review
 from web import metrics
 
 BASE = Path(__file__).resolve().parent
@@ -345,19 +345,20 @@ def trigger_review(owner: str, repo: str, pr: int):
         except OSError:
             pass
 
-    import contextlib
-
+    # Review chạy trong tiến trình riêng: redirect_stdout cũ sửa sys.stdout của
+    # cả interpreter nên hai review song song ghi đè log của nhau. Tiến trình
+    # riêng cũng làm review.lock ghi đúng PID của review thay vì PID của server
+    # (PID server luôn sống → review chết vẫn bị coi là đang chạy).
     log_path = lock.parent / "review.log"
     try:
-        with open(log_path, "w", buffering=1) as logf:
-            with contextlib.redirect_stdout(logf), \
-                    contextlib.redirect_stderr(logf):
-                args = [f"{owner}/{repo}", str(pr), "--force"]
-                if cfg.get("skip_human", True):
-                    args.append("--skip-human")
-                if not cfg.get("post_comment", True):
-                    args.append("--no-post")
-                exit_code = run_main(args)
+        exit_code = run_review(
+            owner, repo, pr,
+            session_root=_session_root(),
+            log_path=log_path,
+            force=True,
+            skip_human=cfg.get("skip_human", True),
+            no_post=not cfg.get("post_comment", True),
+            timeout_seconds=cfg.get("review_timeout_minutes", 30) * 60)
     except Exception:
         # run.py tự dọn review.lock trong finally; nếu nó chưa kịp tạo lock
         # (lỗi trước pipeline), dọn ở đây để tránh lock mồ côi.
@@ -369,6 +370,12 @@ def trigger_review(owner: str, repo: str, pr: int):
             pass
         raise
 
+    if exit_code == EXIT_TIMEOUT:
+        raise HTTPException(
+            status_code=504,
+            detail=(f"review timed out after "
+                    f"{cfg.get('review_timeout_minutes', 30)} minutes and was "
+                    f"killed — see sessions/{owner}/{repo}/pr-{pr}/review.log"))
     if exit_code != 0:
         raise HTTPException(
             status_code=500,

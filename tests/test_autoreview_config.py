@@ -112,3 +112,27 @@ def test_list_repos_without_org(tmp_path):
     p = _write(tmp_path / "a.yml", "repos:\n  sample-app: auto\n")
     rows = list_repos(p, gh=lambda args, **kw: None)  # gh không được gọi
     assert rows == [{"name": "sample-app", "mode": "auto"}]
+
+
+def test_max_parallel_defaults_to_sequential(tmp_path):
+    path = tmp_path / "autoreview.yml"
+    path.write_text("org: o\nrepos:\n  a: auto\n")
+    cfg = load_config(path)
+    assert cfg["max_parallel"] == 1
+    assert cfg["review_timeout_minutes"] == 30
+
+
+@pytest.mark.parametrize("value", ["0", "-1", '"3"', "9", "true", "1.5"])
+def test_max_parallel_rejects_bad_values(tmp_path, value):
+    """0/âm/quá cap/chuỗi/bool/float đều bị từ chối ngay khi load config."""
+    path = tmp_path / "autoreview.yml"
+    path.write_text(f"org: o\nrepos:\n  a: auto\nmax_parallel: {value}\n")
+    with pytest.raises(ValueError, match="max_parallel"):
+        load_config(path)
+
+
+def test_review_timeout_rejects_bad_values(tmp_path):
+    path = tmp_path / "autoreview.yml"
+    path.write_text("org: o\nrepos:\n  a: auto\nreview_timeout_minutes: 0\n")
+    with pytest.raises(ValueError, match="review_timeout_minutes"):
+        load_config(path)

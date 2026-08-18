@@ -4,6 +4,10 @@ from pathlib import Path
 
 import yaml
 
+# Trần cứng cho max_parallel. Không phải giới hạn kỹ thuật mà là chặn tai nạn:
+# mỗi review là một agent gọi model, đặt nhầm 100 là đốt quota trong một pass.
+MAX_PARALLEL_CAP = 8
+
 DEFAULTS = {
     "org": "",
     "default_mode": "manual",
@@ -12,6 +16,12 @@ DEFAULTS = {
     "skip_human": True,
     "drafts": False,
     "skip_bots": True,
+    # Reviews đồng thời trong 1 pass. Mặc định 1 = tuần tự (hành vi cũ).
+    # Mỗi review là 1 tiến trình riêng nên an toàn khi >1; trần thực tế là
+    # API concurrency chứ không phải CPU (~80% thời gian là chờ model).
+    "max_parallel": 1,
+    # Một review treo không được giữ slot mãi khi chạy song song.
+    "review_timeout_minutes": 30,
 }
 
 
@@ -43,6 +53,14 @@ def validate_config(cfg: dict) -> None:
     interval = cfg.get("interval_minutes")
     if not isinstance(interval, int) or interval <= 0:
         raise ValueError("interval_minutes must be a positive integer")
+    parallel = cfg.get("max_parallel")
+    if not isinstance(parallel, int) or isinstance(parallel, bool) \
+            or not 1 <= parallel <= MAX_PARALLEL_CAP:
+        raise ValueError(
+            f"max_parallel must be an integer 1..{MAX_PARALLEL_CAP}")
+    timeout = cfg.get("review_timeout_minutes")
+    if not isinstance(timeout, int) or isinstance(timeout, bool) or timeout <= 0:
+        raise ValueError("review_timeout_minutes must be a positive integer")
 
 
 def _write_atomic(path: Path, cfg: dict) -> None:
