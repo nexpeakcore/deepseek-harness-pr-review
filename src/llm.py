@@ -6,12 +6,14 @@ import urllib.request
 
 
 def chat(messages: list[dict], *, model: str, api_key: str, base_url: str,
-         max_tokens: int = 16384, retries: int = 3) -> str:
+         max_tokens: int = 49_152, retries: int = 3) -> str:
     """POST {base_url}/chat/completions. Retry up to `retries` times (timeout/429/5xx).
 
-    Default max_tokens 16384: deepseek-v4-flash is a reasoning model that spends
-    most of its tokens on reasoning_content before returning real content — 4096
-    is too small (finish_reason=length, empty content).
+    Default max_tokens 49152, matching the verify agent: deepseek-v4-flash is a
+    reasoning model that spends most of its budget on reasoning_content before
+    emitting any real content, so the cap is mostly consumed before the answer
+    starts. 4096 returned empty content; 16384 got a 120-file PR roughly 7.6K
+    characters into its claims JSON and cut it mid-string.
     """
     payload = json.dumps({
         "model": model,
@@ -30,9 +32,19 @@ def chat(messages: list[dict], *, model: str, api_key: str, base_url: str,
         try:
             with urllib.request.urlopen(req, timeout=120) as resp:
                 data = json.loads(resp.read().decode())
-                content = data["choices"][0]["message"]["content"]
+                choice = data["choices"][0]
+                content = choice["message"]["content"]
                 if content is None:
                     raise RuntimeError("chat returned null content")
+                # Truncation has to be named here. The caller only sees a
+                # half-written document, and json.loads reports it as
+                # "Unterminated string at line 146" — which reads like the model
+                # returned garbage rather than like it ran out of room.
+                if choice.get("finish_reason") == "length":
+                    raise RuntimeError(
+                        f"chat truncated: hit max_tokens={max_tokens} before "
+                        f"finishing (finish_reason=length, {len(content)} chars "
+                        f"returned). Raise max_tokens or send less input.")
                 return content
         except urllib.error.HTTPError as e:
             retryable = e.code >= 500 or e.code == 429

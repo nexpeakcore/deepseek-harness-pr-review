@@ -125,3 +125,59 @@ def test_chat_does_not_retry_401():
         assert _UnauthorizedHandler.count == 1
     finally:
         srv.shutdown()
+
+
+def _resp(content, finish_reason="stop"):
+    import json as _json
+
+    class R:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def read(self):
+            return _json.dumps({"choices": [
+                {"message": {"content": content}, "finish_reason": finish_reason}
+            ]}).encode()
+    return R()
+
+
+def test_truncated_response_is_named_as_truncation(monkeypatch):
+    """finish_reason=length must not reach the caller as a JSON parse error.
+
+    A 120-file PR cut the claims JSON mid-string; the review died reporting
+    "Unterminated string at line 146", which reads like a broken model rather
+    than an exhausted token budget.
+    """
+    from src.llm import chat
+
+    monkeypatch.setattr("src.llm.urllib.request.urlopen",
+                        lambda req, timeout=0: _resp('[{"id": "C1", "text": "hal',
+                                                     finish_reason="length"))
+    with pytest.raises(RuntimeError, match=r"truncated: hit max_tokens=\d+"):
+        chat([{"role": "user", "content": "x"}],
+             model="m", api_key="k", base_url="http://x/v1")
+
+
+def test_complete_response_passes_through(monkeypatch):
+    from src.llm import chat
+
+    monkeypatch.setattr("src.llm.urllib.request.urlopen",
+                        lambda req, timeout=0: _resp("[]", finish_reason="stop"))
+    assert chat([{"role": "user", "content": "x"}],
+                model="m", api_key="k", base_url="http://x/v1") == "[]"
+
+
+def test_missing_finish_reason_is_not_treated_as_truncation(monkeypatch):
+    """Not every OpenAI-compatible server sends finish_reason."""
+    import json as _json
+
+    from src.llm import chat
+
+    class R:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def read(self):
+            return _json.dumps({"choices": [{"message": {"content": "ok"}}]}).encode()
+
+    monkeypatch.setattr("src.llm.urllib.request.urlopen", lambda req, timeout=0: R())
+    assert chat([{"role": "user", "content": "x"}],
+                model="m", api_key="k", base_url="http://x/v1") == "ok"
