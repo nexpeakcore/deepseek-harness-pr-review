@@ -736,3 +736,24 @@ def test_header_omits_the_link_when_metadata_has_no_url(tmp_path, monkeypatch):
 
     monkeypatch.setattr(importlib.metadata, "metadata", missing)
     assert project_repo() is None
+
+
+def test_gh_mark_carries_its_own_size(tmp_path, monkeypatch):
+    """The mark must be 16px without CSS.
+
+    An inline <svg> with no width/height falls back to the replaced-element
+    default (300x150) the moment the stylesheet is missing or stale. A cached
+    style.css did exactly that and turned the header into a full-page banner.
+    """
+    client, _ = _cfg_client(tmp_path, monkeypatch, lambda args, **kw: [])
+    html = client.get("/").text
+    assert '<svg class="gh-mark" width="16" height="16"' in html
+
+
+def test_stylesheet_is_cache_busted(tmp_path, monkeypatch):
+    """A CSS change must not need a hard refresh to take effect."""
+    import src
+
+    client, _ = _cfg_client(tmp_path, monkeypatch, lambda args, **kw: [])
+    html = client.get("/").text
+    assert f'href="/static/style.css?v={src.__version__}"' in html

@@ -45,6 +45,15 @@ def project_repo() -> dict | None:
 
 # Set once so base.html can use it without every route threading it through.
 templates.env.globals["project_repo"] = project_repo()
+# Stylesheet cache-buster: a CSS change otherwise needs a hard refresh, and
+# the header depends on CSS for layout it must not be broken without.
+try:
+    import importlib.metadata as _md
+
+    templates.env.globals["app_version"] = _md.version(
+        "deepseek-harness-pr-review")
+except Exception:  # noqa: BLE001 — a dev checkout must still render
+    templates.env.globals["app_version"] = "dev"
 
 app = FastAPI(title="PR Review Dashboard")
 app.mount("/static", StaticFiles(directory=str(BASE / "static")), name="static")
