@@ -328,7 +328,9 @@ def test_verify_reports_progress_per_agent(tmp_path, capsys, monkeypatch):
     run_verify({"model": "m"}, ws, sd, SNAP, _claims(20), runner=runner)
 
     out = capsys.readouterr().out
-    assert "4 agents: claims-1, claims-2, docs, impact" in out
+    # The backend is named too: a review that silently ran on the wrong
+    # provider is otherwise indistinguishable in the live log.
+    assert "4 agents on deepseek/m: claims-1, claims-2, docs, impact" in out
     assert "cap 4 concurrent" in out
     for name in ("claims-1", "claims-2", "docs", "impact"):
         assert f"{name}: done in" in out
@@ -340,3 +342,65 @@ def test_verify_reports_a_failed_agent_in_the_log(tmp_path, capsys):
     run_verify({"model": "m"}, ws, sd, SNAP, _claims(1),
                runner=_fake_runner(PAYLOADS, fail=("docs",)))
     assert "docs: FAILED after" in capsys.readouterr().out
+
+
+# --- agent backend selection ------------------------------------------------
+
+def test_select_runner_defaults_to_the_sdk_backend():
+    from src.verify import RUNNERS, select_runner
+
+    assert select_runner({}) is RUNNERS["deepseek"]
+    assert select_runner({"provider": "  Claude "}) is RUNNERS["claude"]
+
+
+def test_select_runner_names_the_valid_providers():
+    """A typo in HARNESS_PROVIDER must not silently fall back to the default."""
+    from src.verify import select_runner
+
+    with pytest.raises(RuntimeError, match="claude, deepseek"):
+        select_runner({"provider": "cluade"})
+
+
+def test_backend_label_reports_what_actually_ran():
+    from src.verify import backend_label
+
+    assert backend_label({"model": "deepseek-v4-flash"}) == "deepseek/deepseek-v4-flash"
+    assert backend_label({"provider": "claude", "model": "opus"}) == "claude/opus"
+
+
+def test_claude_runner_salvages_a_part_answered_inline(tmp_path, monkeypatch):
+    """Losing a whole review axis to a formatting slip is not an acceptable trade."""
+    from src import claude_cli
+    from src.verify import _run_agent_claude
+
+    monkeypatch.setattr(
+        claude_cli, "run",
+        lambda prompt, **kw: 'Here it is:\n```json\n{"docs": [], '
+                             '"unresolved_questions": []}\n```')
+    ws, sd = tmp_path / "ws", tmp_path / "sd"
+    ws.mkdir()
+    task = {"name": "docs", "out": "findings-docs.json", "prompt": "..."}
+
+    _run_agent_claude({"claude_model": "sonnet"}, ws, sd, task)
+
+    assert json.loads((ws / "findings-docs.json").read_text()) == {
+        "docs": [], "unresolved_questions": []}
+
+
+def test_claude_runner_keeps_the_file_the_agent_wrote(tmp_path, monkeypatch):
+    """The Write tool is the normal path; salvage must never clobber it."""
+    from src import claude_cli
+    from src.verify import _run_agent_claude
+
+    ws, sd = tmp_path / "ws", tmp_path / "sd"
+    ws.mkdir()
+    written = {"docs": [{"path": "README.md", "status": "STALE", "what": "x"}],
+               "unresolved_questions": []}
+    (ws / "findings-docs.json").write_text(json.dumps(written))
+    monkeypatch.setattr(claude_cli, "run",
+                        lambda prompt, **kw: '{"docs": [], "unresolved_questions": []}')
+
+    _run_agent_claude({}, ws, sd, {"name": "docs", "out": "findings-docs.json",
+                                   "prompt": "..."})
+
+    assert json.loads((ws / "findings-docs.json").read_text()) == written

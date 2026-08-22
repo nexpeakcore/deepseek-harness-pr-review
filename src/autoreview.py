@@ -14,6 +14,7 @@ from pathlib import Path
 
 from src.autoreview_config import auto_repos, list_repos, load_config, \
     remove_repo, set_repo_mode
+from src.config import PROVIDERS
 from src.config import load_config as load_env_config
 from src.gh import gh_available, run_gh
 from src.review_proc import review_lock_alive
@@ -353,9 +354,27 @@ def main(argv: list[str] | None = None) -> int:
 
     cfg = load_config(args.config)
     env = load_env_config()
-    if not env.api_key:
+    if env.provider not in PROVIDERS:
+        print(f"unknown HARNESS_PROVIDER={env.provider!r} — expected one of: "
+              f"{', '.join(PROVIDERS)}", file=sys.stderr)
+        return 2
+    if env.needs_deepseek_key and not env.api_key:
         print("DEEPSEEK_API_KEY not set (see .env.example)", file=sys.stderr)
         return 3
+    if env.provider == "claude":
+        # Checked here and not left to the children: a review that dies in
+        # claim extraction leaves a snapshot and no findings, so decide_pr
+        # queues the same PR again on the next interval — every interval,
+        # forever. That is not hypothetical; a launchd PATH without the
+        # per-user bin dir did exactly this.
+        from src import claude_cli
+
+        if not claude_cli.available():
+            print(f"HARNESS_PROVIDER=claude but the claude CLI is not on PATH "
+                  f"— install Claude Code (https://claude.com/claude-code). "
+                  f"PATH was: {os.environ.get('PATH', '(unset)')}",
+                  file=sys.stderr)
+            return 2
     if not gh_available():
         print("gh CLI not installed or not authenticated (gh auth login)",
               file=sys.stderr)

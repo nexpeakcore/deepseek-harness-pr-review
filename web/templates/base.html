@@ -11,6 +11,9 @@
     <a class="brand" href="/">PR Review Dashboard</a>
     <a class="crumb" href="/config">Config</a>
     {% block nav %}{% endblock %}
+    {% set backend = agent_backend() %}
+    <span class="backend" title="Agent backend for new reviews — {{ backend.env }}"
+      >{{ backend.provider }} · <strong>{{ backend.model }}</strong></span>
     {% if project_repo %}
     <a class="crumb repo-link" target="_blank" rel="noopener"
        href="{{ project_repo.url }}" title="{{ project_repo.url }}">

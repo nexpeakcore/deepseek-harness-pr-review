@@ -221,6 +221,7 @@ def test_fixtures_mode_skips_review_lock(tmp_path, monkeypatch):
 
 
 def test_doctor_ready(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("HARNESS_PROVIDER", "deepseek")
     monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")
     monkeypatch.setattr("src.run.gh_available", lambda: True)
     monkeypatch.setattr("src.run.run_gh", lambda args, **kw: {"login": "dev1"})
@@ -235,6 +236,7 @@ def test_doctor_ready(tmp_path, monkeypatch, capsys):
 
 
 def test_doctor_missing_key(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("HARNESS_PROVIDER", "deepseek")
     monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
     monkeypatch.setattr("src.run.gh_available", lambda: True)
     monkeypatch.setattr("src.run.run_gh", lambda args, **kw: {"login": "dev1"})

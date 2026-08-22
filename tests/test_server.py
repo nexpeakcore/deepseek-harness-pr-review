@@ -257,6 +257,9 @@ def test_trigger_review_no_post_config(tmp_path, monkeypatch):
 
 
 def test_trigger_review_missing_key(tmp_path, monkeypatch):
+    # The key is only the DeepSeek backend's requirement, so the backend has to
+    # be named: otherwise the developer's own .env decides what this asserts.
+    monkeypatch.setenv("HARNESS_PROVIDER", "deepseek")
     monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
     cfg_path = tmp_path / "autoreview.yml"
     cfg_path.write_text("org: sample-org\nrepos:\n  sample-app: auto\n")
@@ -757,3 +760,31 @@ def test_stylesheet_is_cache_busted(tmp_path, monkeypatch):
     client, _ = _cfg_client(tmp_path, monkeypatch, lambda args, **kw: [])
     html = client.get("/").text
     assert f'href="/static/style.css?v={src.__version__}"' in html
+
+
+def test_header_names_the_agent_backend(tmp_path, monkeypatch):
+    """A review that quietly ran on the wrong provider must be visible up front.
+
+    The dashboard hands its own environment to every review it starts, so the
+    header is reporting the thing that actually does the work — not a second
+    setting that could disagree with it.
+    """
+    monkeypatch.setenv("HARNESS_PROVIDER", "claude")
+    monkeypatch.setenv("HARNESS_CLAUDE_MODEL", "opus")
+    client, _ = _cfg_client(tmp_path, monkeypatch, lambda args, **kw: [])
+
+    html = client.get("/").text
+    assert "claude · <strong>opus</strong>" in html
+    assert "HARNESS_PROVIDER=claude, HARNESS_CLAUDE_MODEL=opus" in html
+
+
+def test_header_backend_follows_a_restart(tmp_path, monkeypatch):
+    """Read per render, not cached at import — the value only matters when it changes."""
+    monkeypatch.setenv("HARNESS_PROVIDER", "deepseek")
+    monkeypatch.setenv("DSH_MODEL", "deepseek-v4-flash")
+    client, _ = _cfg_client(tmp_path, monkeypatch, lambda args, **kw: [])
+    assert "deepseek · <strong>deepseek-v4-flash</strong>" in client.get("/").text
+
+    monkeypatch.setenv("HARNESS_PROVIDER", "claude")
+    monkeypatch.setenv("HARNESS_CLAUDE_MODEL", "sonnet")
+    assert "claude · <strong>sonnet</strong>" in client.get("/").text

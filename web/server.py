@@ -11,7 +11,7 @@ from fastapi.templating import Jinja2Templates
 from src.autoreview_config import load_config as load_autoreview_config
 from src.autoreview_config import auto_repos, list_repos, remove_repo, set_repo_mode
 from src.autoreview_config import repo_mode as config_repo_mode
-from src.config import load_config
+from src.config import PROVIDERS, load_config
 from src.repo_check import ACTIONABLE, OK, UNKNOWN, check_repo, check_repos
 from src.review_proc import EXIT_TIMEOUT, run_review
 from web import metrics
@@ -43,8 +43,28 @@ def project_repo() -> dict | None:
     return None
 
 
+def agent_backend() -> dict:
+    """Provider + model that a review started from this dashboard will run on.
+
+    Registered as a callable and read per render, not cached at import: the
+    value is only interesting when it changes, and a cached one would keep
+    claiming DeepSeek after the server was restarted with
+    HARNESS_PROVIDER=claude — exactly the moment the header has a job to do.
+
+    run_review() hands the child process a copy of this process's environment,
+    so what the header shows is what the next review actually uses. It is not a
+    second setting that can drift from the one doing the work.
+    """
+    cfg = load_config()
+    model = cfg.phase_cfg()["model"]
+    model_env = "HARNESS_CLAUDE_MODEL" if cfg.provider == "claude" else "DSH_MODEL"
+    return {"provider": cfg.provider, "model": model,
+            "env": f"HARNESS_PROVIDER={cfg.provider}, {model_env}={model}"}
+
+
 # Set once so base.html can use it without every route threading it through.
 templates.env.globals["project_repo"] = project_repo()
+templates.env.globals["agent_backend"] = agent_backend
 # Stylesheet cache-buster: a CSS change otherwise needs a hard refresh, and
 # the header depends on CSS for layout it must not be broken without.
 try:
@@ -447,7 +467,12 @@ def trigger_review(owner: str, repo: str, pr: int):
         raise HTTPException(status_code=400, detail=f"invalid config: {e}")
 
     env = load_config()
-    if not env.api_key:
+    if env.provider not in PROVIDERS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"unknown HARNESS_PROVIDER={env.provider!r} — expected one "
+                   f"of: {', '.join(PROVIDERS)}")
+    if env.needs_deepseek_key and not env.api_key:
         raise HTTPException(status_code=400,
                             detail="DEEPSEEK_API_KEY not set (see .env.example)")
 
