@@ -700,9 +700,13 @@ def test_header_links_to_this_project_repo(tmp_path, monkeypatch):
 
     for path in ("/", "/config"):
         html = client.get(path).text
-        assert "nexpeakcore/deepseek-harness-pr-review ↗" in html
+        assert "nexpeakcore/deepseek-harness-pr-review" in html
         assert 'href="https://github.com/nexpeakcore/deepseek-harness-pr-review"' in html
         assert 'target="_blank"' in html
+        # The GitHub mark is inlined, not fetched: the dashboard is a localhost
+        # app and must render with no network.
+        assert 'class="gh-mark"' in html
+        assert "<svg" in html and "http" not in html.split('class="gh-mark"')[1][:200]
 
 
 def test_project_repo_reads_metadata_not_a_hardcoded_url():

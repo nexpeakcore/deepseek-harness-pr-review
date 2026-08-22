@@ -38,8 +38,13 @@ body {
 .crumb { color: #bdc3c7; text-decoration: none; font-size: 13px; }
 .crumb:hover { color: #fff; }
 /* Pushed to the right edge so it reads as the app's own identity,
-   not as another breadcrumb in the navigation path. */
-.repo-link { margin-left: auto; }
+   not as another breadcrumb in the navigation path. The GitHub mark is
+   inlined rather than fetched: the dashboard runs on localhost and must
+   render with no network. */
+.repo-link {
+  margin-left: auto; display: inline-flex; align-items: center; gap: 6px;
+}
+.gh-mark { width: 16px; height: 16px; flex: none; }
 
 .container { max-width: 1040px; margin: 24px auto; padding: 0 20px; }
 
