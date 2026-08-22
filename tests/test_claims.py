@@ -146,3 +146,34 @@ def test_all_inferred():
     assert not all_inferred([{"source": "inferred"}, {"source": "stated"}])
     assert not all_inferred([])
     assert not all_inferred(None)
+
+
+def test_select_chat_picks_the_backend_named_by_the_provider():
+    from src import claude_cli
+    from src.claims import select_chat
+    from src.llm import chat as openai_chat
+
+    assert select_chat(None) is openai_chat
+    assert select_chat("deepseek") is openai_chat
+    assert select_chat(" CLAUDE ") is claude_cli.chat
+
+
+def test_extract_claims_uses_the_provider_backend(tmp_path, monkeypatch):
+    """Phase 2 must not reach for DeepSeek when the review runs on Claude."""
+    from src import claude_cli
+    from src.claims import extract_claims
+
+    monkeypatch.setattr(
+        claude_cli, "run",
+        lambda prompt, **kw: '[{"id": "C1", "text": "adds a flag", '
+                             '"category": "feature"}]')
+    snapshot = {"title": "Add a --verbose flag",
+                "body": "This PR adds a --verbose flag to the CLI so that "
+                        "operators can see per-request timing in the log.",
+                "files": [{"filename": "cli.py"}], "commits": []}
+
+    claims = extract_claims(snapshot, {"provider": "claude", "model": "sonnet"},
+                            tmp_path)
+
+    assert [c["id"] for c in claims] == ["C1"]
+    assert claims[0]["source"] == "stated"

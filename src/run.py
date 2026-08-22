@@ -9,7 +9,7 @@ import json
 import sys
 from pathlib import Path
 
-from src.config import load_config
+from src.config import PROVIDERS, load_config
 from src.gh import gh_available, run_gh
 from src.claims import all_inferred
 from src.review_proc import review_lock_alive
@@ -20,7 +20,7 @@ from src.verify import run_verify, setup_workspace
 
 
 def _doctor() -> int:
-    """Check readiness: Python, gh, API key, SDK, config. Exit 0 if ready."""
+    """Check readiness: Python, gh, the selected backend, config. Exit 0 if ready."""
     import platform
 
     ok = True
@@ -43,19 +43,37 @@ def _doctor() -> int:
         ok = False
 
     cfg = load_config()
-    if cfg.api_key:
-        print("✓ DEEPSEEK_API_KEY set")
-    else:
-        print("✗ DEEPSEEK_API_KEY not set — see .env.example")
+    if cfg.provider not in PROVIDERS:
+        print(f"✗ HARNESS_PROVIDER={cfg.provider!r} unknown — expected one of: "
+              f"{', '.join(PROVIDERS)}")
         ok = False
+    elif cfg.provider == "claude":
+        print(f"✓ provider: claude (model {cfg.claude_model})")
+        from src import claude_cli
 
-    try:
-        importlib.metadata.version("deepseek-harness-sdk")
-        print(f"✓ deepseek-harness-sdk installed "
-              f"({importlib.metadata.version('deepseek-harness-sdk')})")
-    except importlib.metadata.PackageNotFoundError:
-        print("✗ deepseek-harness-sdk not installed — run `pip install -e '.[dev]'`")
-        ok = False
+        installed = claude_cli.version() if claude_cli.available() else ""
+        if installed:
+            print(f"✓ claude CLI installed ({installed})")
+            print("· the CLI carries its own credentials — no API key needed here")
+        else:
+            print("✗ claude CLI not found on PATH — install Claude Code: "
+                  "https://claude.com/claude-code")
+            ok = False
+    else:
+        print(f"✓ provider: deepseek (model {cfg.model})")
+        if cfg.api_key:
+            print("✓ DEEPSEEK_API_KEY set")
+        else:
+            print("✗ DEEPSEEK_API_KEY not set — see .env.example")
+            ok = False
+
+        try:
+            importlib.metadata.version("deepseek-harness-sdk")
+            print(f"✓ deepseek-harness-sdk installed "
+                  f"({importlib.metadata.version('deepseek-harness-sdk')})")
+        except importlib.metadata.PackageNotFoundError:
+            print("✗ deepseek-harness-sdk not installed — run `pip install -e '.[dev]'`")
+            ok = False
 
     from src.autoreview_config import load_config as load_autoreview_config
 
@@ -273,7 +291,8 @@ def main(argv: list[str] | None = None) -> int:
                              "(for e2e, skips gh & model)")
     parser.add_argument("--version", action="store_true",
                         help="print the installed version")
-    parser.add_argument("doctor", nargs="?", help="check readiness (Python, gh, API key, SDK)")
+    parser.add_argument("doctor", nargs="?",
+                        help="check readiness (Python, gh, agent backend)")
     parser.add_argument("update", nargs="?", help="self-update from GitHub")
     parser.add_argument("web", nargs="?", help="open the web dashboard at http://127.0.0.1:6789")
     args = parser.parse_args(argv)
@@ -311,7 +330,11 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     cfg = load_config()
-    if not cfg.api_key and args.fixtures is None:
+    if cfg.provider not in PROVIDERS:
+        print(f"unknown HARNESS_PROVIDER={cfg.provider!r} — expected one of: "
+              f"{', '.join(PROVIDERS)}", file=sys.stderr)
+        return 2
+    if cfg.needs_deepseek_key and not cfg.api_key and args.fixtures is None:
         print("DEEPSEEK_API_KEY not set (see .env.example)", file=sys.stderr)
         return 3
     if not gh_available() and args.fixtures is None:
@@ -355,9 +378,7 @@ def main(argv: list[str] | None = None) -> int:
             claims = _load_or_skip("claims.json", session_dir, args.force)
             if claims is None:
                 _phase(2, "claims", "reading the PR description")
-                claims = extract_claims(
-                    snapshot, {"model": cfg.model, "api_key": cfg.api_key,
-                               "base_url": cfg.base_url}, session_dir)
+                claims = extract_claims(snapshot, cfg.phase_cfg(), session_dir)
             source = "inferred from code" if all_inferred(claims) else "from description"
             _phase(2, "claims", f"{len(claims)} claims {source}")
 
@@ -367,8 +388,8 @@ def main(argv: list[str] | None = None) -> int:
                 _phase(3, "workspace", "cloning + checking out the PR head")
                 setup_workspace(owner, repo, int(num), workspace)
                 _phase(4, "verify", "starting agents")
-                findings = run_verify(
-                    {"model": cfg.model}, workspace, session_dir, snapshot, claims)
+                findings = run_verify(cfg.phase_cfg(), workspace, session_dir,
+                                      snapshot, claims)
                 (session_dir / "findings.json").write_text(
                     json.dumps(findings, indent=2))
                 _bump_rounds(session_dir)

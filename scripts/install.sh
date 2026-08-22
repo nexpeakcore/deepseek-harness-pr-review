@@ -104,3 +104,4 @@ say "Checking readiness..."
 
 say "Done. Run 'harness-pr-review doctor' (or open a new terminal) to verify."
 say "Next: gh auth login  &&  export DEEPSEEK_API_KEY=sk-..."
+say "      (or export HARNESS_PROVIDER=claude to run the review on the Claude Code CLI — no API key needed)"

@@ -1,4 +1,4 @@
-"""Phase 3: set up the worktree + run the deep-dive agents (DeepSeekHarness SDK).
+"""Phase 3: set up the worktree + run the deep-dive agents.
 
 One agent used to carry the whole review: claims, docs reality-check,
 requirement impact and review threads, in one prompt sharing one attention
@@ -10,6 +10,11 @@ parts are merged back into the one findings.json the rest of the pipeline
 already expects. Agents share the workspace read-only and write to separate
 part files, so nothing races; the global cap lives in src/agent_pool.py because
 autoreview may be running several of these reviews at once.
+
+Which agent runtime executes a task is a config choice, not a structural one:
+run_verify() picks a runner by provider (see RUNNERS), and every runner obeys
+the same contract — take one task, leave task["out"] in the workspace, return
+the reply text for the session log.
 """
 import json
 import subprocess
@@ -269,6 +274,57 @@ def _run_agent(cfg: dict, workspace: Path, session_dir: Path, task: dict) -> str
     return result.final_response
 
 
+def _run_agent_claude(cfg: dict, workspace: Path, session_dir: Path,
+                      task: dict) -> str:
+    """Same contract as _run_agent, backed by headless `claude -p`.
+
+    The CLI writes the part file itself through its Write tool. When it answers
+    with the JSON inline instead, salvaging it here costs a few lines and saves
+    the axis; without it read_part() reports "agent did not write it" and the
+    review ships a gap for what was really a formatting slip.
+    """
+    from src import claude_cli
+
+    response = claude_cli.run(
+        task["prompt"],
+        model=(cfg.get("claude_model") or cfg.get("model")
+               or claude_cli.DEFAULT_MODEL),
+        cwd=workspace,
+        allowed_tools=claude_cli.AGENT_TOOLS,
+        meta_path=session_dir / f"claude-{task['name']}.json",
+    )
+    out = workspace / task["out"]
+    if not out.exists():
+        salvaged = claude_cli.extract_json_object(response)
+        if salvaged is not None:
+            out.write_text(salvaged)
+    return response
+
+
+# Agent backends, by HARNESS_PROVIDER value.
+RUNNERS = {"deepseek": _run_agent, "claude": _run_agent_claude}
+DEFAULT_PROVIDER = "deepseek"
+
+
+def provider_of(cfg: dict) -> str:
+    return (cfg.get("provider") or DEFAULT_PROVIDER).strip().lower()
+
+
+def select_runner(cfg: dict):
+    """The agent backend named by cfg["provider"]."""
+    provider = provider_of(cfg)
+    if provider not in RUNNERS:
+        raise RuntimeError(
+            f"unknown provider {provider!r} — set HARNESS_PROVIDER to one of: "
+            f"{', '.join(sorted(RUNNERS))}")
+    return RUNNERS[provider]
+
+
+def backend_label(cfg: dict) -> str:
+    """provider/model, for the phase log the dashboard tails."""
+    return f"{provider_of(cfg)}/{cfg.get('model') or '?'}"
+
+
 def _execute(cfg: dict, workspace: Path, session_dir: Path, task: dict,
              runner) -> tuple[dict, dict | None, str | None]:
     """Run one agent under a global slot. Never raises — the caller decides.
@@ -304,7 +360,7 @@ def _execute(cfg: dict, workspace: Path, session_dir: Path, task: dict,
 def run_verify(cfg: dict, workspace: Path, session_dir: Path, snapshot: dict,
                claims: list[dict], runner=None) -> dict:
     """Fan out one agent per axis, merge the parts, validate and return findings."""
-    runner = runner or _run_agent
+    runner = runner or select_runner(cfg)
     session_dir.mkdir(parents=True, exist_ok=True)
     doc_candidates = rank_docs(workspace, snapshot, claims)
     tasks = plan_tasks(snapshot, claims, doc_candidates)
@@ -314,7 +370,8 @@ def run_verify(cfg: dict, workspace: Path, session_dir: Path, snapshot: dict,
     for task in tasks:
         (workspace / task["out"]).unlink(missing_ok=True)
 
-    print(f"      {len(tasks)} agents: {', '.join(t['name'] for t in tasks)}"
+    print(f"      {len(tasks)} agents on {backend_label(cfg)}: "
+          f"{', '.join(t['name'] for t in tasks)}"
           f" (cap {max_agents()} concurrent)", flush=True)
     with ThreadPoolExecutor(max_workers=len(tasks)) as pool:
         results = list(pool.map(

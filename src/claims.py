@@ -176,22 +176,39 @@ def _parse_claims(raw: str, source: str) -> list[dict]:
 
 def _run_pass(system: str, user: str, cfg: dict, source: str, chat) -> list[dict]:
     try:
+        # api_key/base_url are the OpenAI-compatible backend's business; the
+        # Claude one ignores them, so they are read as optional here rather
+        # than demanded of every provider's config.
         raw = chat([{"role": "system", "content": system},
                     {"role": "user", "content": user}],
-                   model=cfg["model"], api_key=cfg["api_key"],
-                   base_url=cfg["base_url"])
+                   model=cfg["model"], api_key=cfg.get("api_key", ""),
+                   base_url=cfg.get("base_url", ""))
         return _parse_claims(raw, source)
     except (json.JSONDecodeError, ValueError, RuntimeError) as e:
         raise RuntimeError(f"invalid claims response ({source}): {e}") from e
 
 
+def select_chat(provider: str | None):
+    """The chat implementation for a provider.
+
+    Phase 2 has no workspace to read — it is a single text-in/JSON-out call —
+    so the Claude backend enters here as a chat function with the same
+    signature rather than as an agent runner.
+    """
+    if (provider or "").strip().lower() == "claude":
+        from src import claude_cli
+        return claude_cli.chat
+    return _default_chat
+
+
 def extract_claims(snapshot: dict, cfg: dict, session_dir: Path,
-                   chat=_default_chat) -> list[dict]:
+                   chat=None) -> list[dict]:
     """Extract claims from the snapshot. Save claims.json, return the claims list.
 
     Falls back to inferred claims when the description is thin, or when the
     stated pass finds nothing verifiable in it.
     """
+    chat = chat or select_chat(cfg.get("provider"))
     claims: list[dict] = []
     if not description_is_thin(snapshot):
         description = f"# Title: {snapshot['title']}\n\n{snapshot['body']}"

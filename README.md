@@ -92,10 +92,55 @@ export DEEPSEEK_API_KEY=sk-...   # see .env.example
 harness-pr-review doctor         # verify everything is ready
 ```
 
+Running the review on Claude instead? Then no DeepSeek key is needed — see
+[Agent backends](#agent-backends).
+
 Keys can also live in a `.env` file. Two locations are read, in order:
 `./.env` (dev checkout) then `~/.harness-pr-review/.env` (one-liner install,
 so the CLI works from any directory). The first file to define a key wins, and
 a real environment variable always beats both.
+
+## Agent backends
+
+The review logic does not care which agent runtime reads the workspace, so the
+backend is one env var. Everything else — phases, prompts, schemas, report,
+comments — is identical either way.
+
+| `HARNESS_PROVIDER` | Runtime | Credentials |
+|---|---|---|
+| `deepseek` (default) | DeepSeek Harness SDK, composed by `cordis/minimal.cordis.yml` | `DEEPSEEK_API_KEY` |
+| `claude` | Headless `claude -p` (Claude Code CLI) | whatever the CLI is already logged in with — a Claude subscription is enough, no extra API key |
+
+```bash
+export HARNESS_PROVIDER=claude
+export HARNESS_CLAUDE_MODEL=sonnet   # or opus / haiku / a full model id
+harness-pr-review doctor             # now checks for the claude binary, not the SDK
+harness-pr-review owner/repo 123
+```
+
+The phase log names the backend that actually ran, so a review that quietly
+used the wrong one is visible in the dashboard:
+
+```
+[4/5] verify — starting agents
+      4 agents on claude/sonnet: claims-1, claims-2, docs, impact (cap 4 concurrent)
+```
+
+**The workspace is an untrusted PR**, and the Claude backend is locked down to
+match the sandbox policy the SDK backend runs under:
+
+- Tools are limited to `Read`, `Grep`, `Glob`, `Write` — no shell, no editing
+  files outside the part it is asked to write, no network.
+- `--safe-mode`, `--setting-sources user` and `--strict-mcp-config` mean a
+  `CLAUDE.md`, `.claude/settings.json`, hook or `.mcp.json` **committed inside
+  the reviewed repo is not loaded** — a PR does not get to configure the agent
+  reviewing it.
+- Each agent runs under `--max-budget-usd`, so a loop that stops making
+  progress stops spending.
+
+Per-agent cost, session id and any permission denial land in
+`sessions/<owner>/<repo>/pr-<n>/claude-<axis>.json`, next to the existing
+artefacts.
 
 ## Updating
 
@@ -153,9 +198,10 @@ Results land in `sessions/<owner>/<repo>/pr-<n>/report.md` (change the directory
 
 1. **Snapshot** — fetch PR metadata, diff files, commits, review threads (GitHub REST + GraphQL)
 2. **Claims** — LLM splits the description into verifiable claims
-3. **Verify** — DeepSeek Harness agent deep-dives in a disposable worktree:
+3. **Verify** — the agent backend deep-dives in a disposable worktree:
    verifies each claim, docs reality-check (MATCH/STALE/WRONG/FABRICATED),
-   requirement impact, review thread status
+   requirement impact, review thread status. DeepSeek Harness by default,
+   Claude Code with `HARNESS_PROVIDER=claude` — see [Agent backends](#agent-backends)
 4. **Human gate** — asks for confirmation (≤20 words/question) when docs are wrong or claims are uncertain
 5. **Synthesize** — English report.md + two comments on the PR:
    - **The report** — one comment, edited in place on every re-review so the PR
@@ -277,8 +323,10 @@ re-run with `--force`; the PR comment is updated in place (never duplicated).
 
 | Env | Default | Meaning |
 |---|---|---|
-| `DEEPSEEK_API_KEY` | — | DeepSeek API key |
-| `DSH_MODEL` | `deepseek-v4-flash` | Model used for the agent + claim extraction |
+| `HARNESS_PROVIDER` | `deepseek` | Agent backend: `deepseek` or `claude` (see [Agent backends](#agent-backends)) |
+| `HARNESS_CLAUDE_MODEL` | `sonnet` | Model for the `claude` backend |
+| `DEEPSEEK_API_KEY` | — | DeepSeek API key (only required by the `deepseek` backend) |
+| `DSH_MODEL` | `deepseek-v4-flash` | Model for the `deepseek` backend (agent + claim extraction) |
 | `DEEPSEEK_BASE_URL` | `https://api.deepseek.com/v1` | OpenAI-compatible endpoint |
 | `DSH_SESSION_ROOT` | `sessions` | Directory storing per-phase results |
 

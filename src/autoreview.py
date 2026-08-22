@@ -353,7 +353,7 @@ def main(argv: list[str] | None = None) -> int:
 
     cfg = load_config(args.config)
     env = load_env_config()
-    if not env.api_key:
+    if env.needs_deepseek_key and not env.api_key:
         print("DEEPSEEK_API_KEY not set (see .env.example)", file=sys.stderr)
         return 3
     if not gh_available():
