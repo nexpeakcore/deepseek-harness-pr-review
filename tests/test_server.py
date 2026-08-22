@@ -692,3 +692,43 @@ def test_config_routes_accept_owner_slash_repo_keys(tmp_path, monkeypatch):
     # Bare keys keep working.
     assert client.delete("/api/config/repos/api").status_code == 200
     assert load_acfg(cfg_path)["repos"] == {}
+
+
+def test_header_links_to_this_project_repo(tmp_path, monkeypatch):
+    """The dashboard should say which tool it is, on every page."""
+    client, _ = _cfg_client(tmp_path, monkeypatch, lambda args, **kw: [])
+
+    for path in ("/", "/config"):
+        html = client.get(path).text
+        assert "nexpeakcore/deepseek-harness-pr-review ↗" in html
+        assert 'href="https://github.com/nexpeakcore/deepseek-harness-pr-review"' in html
+        assert 'target="_blank"' in html
+
+
+def test_project_repo_reads_metadata_not_a_hardcoded_url():
+    """A fork must show its own repo, so the URL comes from the distribution."""
+    from web.server import project_repo
+
+    info = project_repo()
+    assert info["url"].startswith("https://github.com/")
+    assert info["name"] == info["url"].removeprefix("https://github.com/")
+
+
+def test_header_omits_the_link_when_metadata_has_no_url(tmp_path, monkeypatch):
+    """An install predating the Project-URL entry must still render."""
+    import importlib.metadata
+
+    from web.server import project_repo
+
+    class NoUrls:
+        def get_all(self, key):
+            return None
+
+    monkeypatch.setattr(importlib.metadata, "metadata", lambda name: NoUrls())
+    assert project_repo() is None
+
+    def missing(name):
+        raise importlib.metadata.PackageNotFoundError(name)
+
+    monkeypatch.setattr(importlib.metadata, "metadata", missing)
+    assert project_repo() is None

@@ -19,6 +19,33 @@ from web import metrics
 BASE = Path(__file__).resolve().parent
 templates = Jinja2Templates(directory=str(BASE / "templates"))
 
+
+def project_repo() -> dict | None:
+    """{"name", "url"} for this tool's own repo, or None if unknown.
+
+    Read from the installed distribution's Project-URL rather than hardcoded, so
+    a fork shows its own repo instead of this one. An install predating the
+    metadata entry simply gets no link — the header must not depend on it.
+    """
+    import importlib.metadata
+
+    try:
+        urls = importlib.metadata.metadata(
+            "deepseek-harness-pr-review").get_all("Project-URL") or []
+    except importlib.metadata.PackageNotFoundError:
+        return None
+    for entry in urls:
+        label, _, url = entry.partition(",")
+        if label.strip().lower() in ("repository", "source", "homepage"):
+            url = url.strip()
+            return {"name": url.rstrip("/").removeprefix(
+                "https://github.com/"), "url": url}
+    return None
+
+
+# Set once so base.html can use it without every route threading it through.
+templates.env.globals["project_repo"] = project_repo()
+
 app = FastAPI(title="PR Review Dashboard")
 app.mount("/static", StaticFiles(directory=str(BASE / "static")), name="static")
 
