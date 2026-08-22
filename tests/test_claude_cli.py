@@ -236,6 +236,35 @@ def test_run_does_not_retry_what_will_fail_again():
     assert len(calls) == 1
 
 
+def test_run_clears_the_previous_attempt_output_before_retrying(tmp_path):
+    """An attempt can write its file and then die in the API.
+
+    If the retry answers inline instead of writing, the caller's salvage sees
+    a file already sitting there, skips, and read_part() consumes the dead
+    attempt's half-written JSON as this agent's findings.
+    """
+    part = tmp_path / "findings-docs.json"
+    part.write_text('{"docs": [{"path": "stale"}]}')
+    seen = []
+    fake, _ = _sequence(API_ERROR, _envelope(result="answered inline"))
+
+    def watch(argv, **kwargs):
+        seen.append(part.exists())
+        return fake(argv, **kwargs)
+
+    claude_cli.run("hi", reset_paths=(part,), _run=watch,
+                   _sleep=lambda _: None)
+
+    # False on both attempts: the pre-existing file and the first attempt's.
+    assert seen == [False, False]
+
+
+def test_run_reset_paths_tolerates_a_missing_file(tmp_path):
+    fake, _ = _sequence(_envelope(result="fine"))
+    assert claude_cli.run("hi", reset_paths=(tmp_path / "never-written.json",),
+                          _run=fake) == "fine"
+
+
 def test_run_reports_why_the_run_ended_not_its_subtype():
     """subtype stays "success" for a run that died in the API."""
     fake, _ = _sequence(API_ERROR)

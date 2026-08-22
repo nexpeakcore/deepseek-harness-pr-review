@@ -285,6 +285,7 @@ def _run_agent_claude(cfg: dict, workspace: Path, session_dir: Path,
     """
     from src import claude_cli
 
+    out = workspace / task["out"]
     response = claude_cli.run(
         task["prompt"],
         model=(cfg.get("claude_model") or cfg.get("model")
@@ -292,8 +293,11 @@ def _run_agent_claude(cfg: dict, workspace: Path, session_dir: Path,
         cwd=workspace,
         tools=claude_cli.AGENT_TOOLS,
         meta_path=session_dir / f"claude-{task['name']}.json",
+        # An attempt that writes this and then dies in the API must not leave
+        # it behind for the retry: the salvage below would see a file already
+        # there and read the dead attempt's output as this agent's answer.
+        reset_paths=(out,),
     )
-    out = workspace / task["out"]
     if not out.exists():
         salvaged = claude_cli.extract_json_object(response)
         if salvaged is not None:

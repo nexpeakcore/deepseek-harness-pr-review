@@ -126,7 +126,8 @@ def run(prompt: str, *, model: str = DEFAULT_MODEL, cwd: Path | None = None,
         timeout: int = DEFAULT_TIMEOUT_SECONDS,
         max_budget_usd: float | None = DEFAULT_MAX_BUDGET_USD,
         meta_path: Path | None = None, retries: int = DEFAULT_RETRIES,
-        _run=subprocess.run, _sleep=time.sleep) -> str:
+        reset_paths: tuple = (), _run=subprocess.run,
+        _sleep=time.sleep) -> str:
     """Run one headless turn and return the agent's final text.
 
     The prompt goes over stdin, never argv: a claims prompt carries the PR
@@ -141,10 +142,20 @@ def run(prompt: str, *, model: str = DEFAULT_MODEL, cwd: Path | None = None,
     DeepSeek backend uses. Everything else — a bad model id, a missing binary,
     an unparseable reply — fails on the first attempt, because trying it again
     only spends the review's time to reach the same answer.
+
+    `reset_paths` are removed before every attempt. An attempt can write its
+    output file and *then* die in the API; if the retry answers inline instead
+    of writing, the caller's salvage sees a file already there, skips, and the
+    dead attempt's half-written JSON is read as the result.
     """
     argv = build_argv(model=model, tools=tools, system=system,
                       max_budget_usd=max_budget_usd)
     for attempt in range(1, max(1, retries) + 1):
+        for stale in reset_paths:
+            try:
+                Path(stale).unlink(missing_ok=True)
+            except OSError:
+                pass
         try:
             return _attempt(argv, prompt, cwd=cwd, timeout=timeout,
                             meta_path=meta_path, _run=_run)

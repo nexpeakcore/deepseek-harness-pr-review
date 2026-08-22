@@ -513,3 +513,29 @@ def test_check_repos_exits_zero_when_all_reachable(tmp_path, monkeypatch):
         "src.gh.run_gh",
         lambda args, **kw: [] if args[1].startswith("orgs/") else "acme/good")
     assert main(["--check-repos", "--config", str(cfg)]) == 0
+
+
+def test_autoreview_stops_before_polling_when_claude_is_missing(tmp_path, monkeypatch, capsys):
+    """A review that dies in claim extraction leaves no findings, so decide_pr
+    queues the same PR again every interval — forever. Fail once instead."""
+    from src import claude_cli
+    from src.autoreview import main
+
+    cfg = tmp_path / "autoreview.yml"
+    cfg.write_text("org: sample-org\nrepos:\n  sample-app: auto\n")
+    monkeypatch.setenv("HARNESS_PROVIDER", "claude")
+    monkeypatch.setattr(claude_cli, "available", lambda: False)
+
+    assert main(["--once", "--config", str(cfg)]) == 2
+    assert "claude CLI is not on PATH" in capsys.readouterr().err
+
+
+def test_autoreview_rejects_an_unknown_provider(tmp_path, monkeypatch, capsys):
+    from src.autoreview import main
+
+    cfg = tmp_path / "autoreview.yml"
+    cfg.write_text("org: sample-org\nrepos:\n  sample-app: auto\n")
+    monkeypatch.setenv("HARNESS_PROVIDER", "cluade")
+
+    assert main(["--once", "--config", str(cfg)]) == 2
+    assert "unknown HARNESS_PROVIDER" in capsys.readouterr().err
