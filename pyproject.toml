@@ -12,6 +12,9 @@ dependencies = [
     "pyyaml",
 ]
 
+[project.urls]
+Repository = "https://github.com/nexpeakcore/deepseek-harness-pr-review"
+
 [project.scripts]
 harness-pr-review = "src.run:main"
 autoreview = "src.autoreview:main"

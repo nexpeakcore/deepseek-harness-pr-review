@@ -37,6 +37,9 @@ body {
 .brand { color: #fff; font-weight: 700; font-size: 15px; text-decoration: none; }
 .crumb { color: #bdc3c7; text-decoration: none; font-size: 13px; }
 .crumb:hover { color: #fff; }
+/* Pushed to the right edge so it reads as the app's own identity,
+   not as another breadcrumb in the navigation path. */
+.repo-link { margin-left: auto; }
 
 .container { max-width: 1040px; margin: 24px auto; padding: 0 20px; }
 

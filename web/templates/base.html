@@ -11,6 +11,10 @@
     <a class="brand" href="/">PR Review Dashboard</a>
     <a class="crumb" href="/config">Config</a>
     {% block nav %}{% endblock %}
+    {% if project_repo %}
+    <a class="crumb repo-link" target="_blank" rel="noopener"
+       href="{{ project_repo.url }}">{{ project_repo.name }} ↗</a>
+    {% endif %}
   </header>
   <main class="container">
     {% block content %}{% endblock %}
