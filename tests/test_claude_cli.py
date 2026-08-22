@@ -34,8 +34,7 @@ def _spy(stdout="", stderr="", returncode=0):
 
 def test_build_argv_hardens_against_the_reviewed_repo():
     """The workspace is an untrusted PR: it must not configure its own reviewer."""
-    argv = claude_cli.build_argv(model="sonnet",
-                                 allowed_tools=claude_cli.AGENT_TOOLS)
+    argv = claude_cli.build_argv(model="sonnet", tools=claude_cli.AGENT_TOOLS)
     assert argv[:2] == ["claude", "-p"]
     assert "--safe-mode" in argv          # no CLAUDE.md / hooks / skills from the repo
     assert "--strict-mcp-config" in argv  # no .mcp.json from the repo
@@ -46,11 +45,35 @@ def test_build_argv_hardens_against_the_reviewed_repo():
 
 def test_build_argv_passes_tools_as_one_comma_separated_argument():
     """Variadic space-separated tools would swallow the flag that follows them."""
-    argv = claude_cli.build_argv(model="sonnet",
-                                 allowed_tools=("Read", "Write"),
+    argv = claude_cli.build_argv(model="sonnet", tools=("Read", "Write"),
                                  system="be brief")
+    assert argv[argv.index("--tools") + 1] == "Read,Write"
     assert argv[argv.index("--allowedTools") + 1] == "Read,Write"
     assert argv[argv.index("--append-system-prompt") + 1] == "be brief"
+
+
+def test_tools_is_the_boundary_not_allowedtools():
+    """--allowedTools only pre-approves; a tool left out of it still exists.
+
+    Restricting reach with --allowedTools alone leaves Bash present and merely
+    unapproved, and a user settings rule can approve it — so the tool set has
+    to be cut with --tools, which decides what exists at all.
+    """
+    argv = claude_cli.build_argv(model="sonnet", tools=claude_cli.AGENT_TOOLS)
+    assert argv[argv.index("--tools") + 1] == "Read,Grep,Glob,Write"
+    assert "Bash" not in argv[argv.index("--tools") + 1]
+
+
+def test_no_tools_is_the_default_and_removes_every_tool():
+    """A new call site has to ask for reach rather than inherit it.
+
+    "" is the CLI's own spelling for "no tools at all" — verified against the
+    binary: with it, an instruction to run Bash produces no tool call and no
+    file on disk.
+    """
+    argv = claude_cli.build_argv(model="sonnet")
+    assert argv[argv.index("--tools") + 1] == ""
+    assert "--allowedTools" not in argv
 
 
 def test_agent_tools_grant_no_execution():
@@ -206,6 +229,8 @@ def test_chat_matches_the_llm_chat_signature_and_splits_the_roles(monkeypatch):
     prompt, kwargs = calls[0]
     assert out == "[]"
     assert prompt == "the PR description"
+    # Phase 2 has no sandboxed workspace and an untrusted prompt: no tools.
+    assert kwargs.get("tools", claude_cli.NO_TOOLS) == claude_cli.NO_TOOLS
     assert "you are a claim extractor" in kwargs["system"]
     # Phase 2 has no workspace, so a tool call is a wasted turn.
     assert claude_cli.NO_TOOLS_HINT in kwargs["system"]

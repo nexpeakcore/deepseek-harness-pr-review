@@ -129,8 +129,14 @@ used the wrong one is visible in the dashboard:
 **The workspace is an untrusted PR**, and the Claude backend is locked down to
 match the sandbox policy the SDK backend runs under:
 
-- Tools are limited to `Read`, `Grep`, `Glob`, `Write` — no shell, no editing
-  files outside the part it is asked to write, no network.
+- `--tools Read,Grep,Glob,Write` — no shell, no editing, no network. This is
+  the flag that decides which built-in tools *exist* for the run.
+  `--allowedTools` alone is not a boundary: it only pre-approves what may run
+  without a prompt, so a tool left out of it is still present and a user
+  settings rule can approve it. Both are passed, from the same list.
+- Phase 2 (claim extraction) runs with `--tools ""` — **no tools at all**. It
+  is text in, JSON out, its prompt carries the untrusted PR description and
+  diff, and unlike phase 3 it has no sandboxed workspace confining it.
 - `--safe-mode`, `--setting-sources user` and `--strict-mcp-config` mean a
   `CLAUDE.md`, `.claude/settings.json`, hook or `.mcp.json` **committed inside
   the reviewed repo is not loaded** — a PR does not get to configure the agent

@@ -50,10 +50,12 @@ class Config:
     def needs_deepseek_key(self) -> bool:
         """Only the DeepSeek backend is blocked by a missing DEEPSEEK_API_KEY.
 
-        Asked as a property rather than compared inline, because three call
-        sites gate on it (run, autoreview, doctor) and each one drifting into
-        its own `== "deepseek"` check is how the Claude path ends up demanding
-        a key it never uses.
+        Asked as a property rather than compared inline, because three
+        entry points gate on it — the CLI, the autoreview poller and the
+        dashboard's Review now — and each drifting into its own
+        `== "deepseek"` check is how one of them ends up demanding a key it
+        never uses. The dashboard did exactly that and 400'd every review
+        under the Claude backend while the CLI ran the same review fine.
         """
         return self.provider == "deepseek"
 

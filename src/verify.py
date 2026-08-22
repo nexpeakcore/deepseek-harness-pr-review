@@ -290,7 +290,7 @@ def _run_agent_claude(cfg: dict, workspace: Path, session_dir: Path,
         model=(cfg.get("claude_model") or cfg.get("model")
                or claude_cli.DEFAULT_MODEL),
         cwd=workspace,
-        allowed_tools=claude_cli.AGENT_TOOLS,
+        tools=claude_cli.AGENT_TOOLS,
         meta_path=session_dir / f"claude-{task['name']}.json",
     )
     out = workspace / task["out"]

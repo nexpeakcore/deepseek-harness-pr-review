@@ -14,9 +14,13 @@ this backend adds no second API key to .env.
 The workspace holds a PR from a repo we do not control, so every invocation is
 narrowed the same way cordis/minimal.cordis.yml narrows the DeepSeek agent:
 
-- `--allowedTools` — read the code, write one part file. No Bash, no Edit, no
-  network. In print mode anything else is auto-denied instead of prompting, so
-  a blocked tool costs a turn rather than hanging the review.
+- `--tools` — the boundary. It sets which built-in tools *exist* for the run:
+  read the code, write one part file, nothing else. `--allowedTools` is not a
+  boundary and was the first thing tried here — it only pre-approves what may
+  run without a prompt, so a tool left out of it still exists, and a user
+  settings rule can approve it anyway. `--tools ""` removes every tool, which
+  is what phase 2 runs with. Both are passed: --tools decides what exists,
+  --allowedTools keeps what exists from stopping to ask.
 - `--safe-mode` — the checked-out repo's own CLAUDE.md, hooks, skills, plugins
   and custom agents are not loaded. Without it a PR could ship a CLAUDE.md and
   steer the reviewer that is meant to be reviewing it.
@@ -35,8 +39,12 @@ from pathlib import Path
 BINARY = "claude"
 DEFAULT_MODEL = "sonnet"
 
-# Read the code, write one findings part. Nothing else.
+# Read the code, write one findings part. Nothing else exists for the run.
 AGENT_TOOLS = ("Read", "Grep", "Glob", "Write")
+# Phase 2 is text in, JSON out, with no workspace to read — and its prompt
+# carries the PR description and diff, which are untrusted. Nothing to gain
+# from a tool, everything to lose.
+NO_TOOLS = ()
 
 # A verify agent greps a whole repo; 30 minutes matches the streamIdleTimeoutMs
 # the SDK backend runs with.
@@ -68,10 +76,13 @@ def version() -> str:
     return proc.stdout.strip() if proc.returncode == 0 else ""
 
 
-def build_argv(*, model: str, allowed_tools: tuple = (),
+def build_argv(*, model: str, tools: tuple = NO_TOOLS,
                system: str | None = None,
                max_budget_usd: float | None = DEFAULT_MAX_BUDGET_USD) -> list[str]:
     """The full command line for one headless turn.
+
+    `tools` defaults to none at all, so a new call site has to ask for reach
+    rather than inherit it.
 
     Tools go in as one comma-separated argument rather than as the variadic
     space-separated form: variadic options swallow whatever follows them, and
@@ -84,8 +95,15 @@ def build_argv(*, model: str, allowed_tools: tuple = (),
             "--safe-mode",
             "--strict-mcp-config",
             "--setting-sources", "user"]
-    if allowed_tools:
-        argv += ["--allowedTools", ",".join(allowed_tools)]
+    # --tools is the real boundary: it decides which built-in tools exist at
+    # all, and "" removes every one of them. --allowedTools only says which of
+    # the surviving tools may run without stopping to ask, so on its own it
+    # would leave Bash present and merely unapproved — and a user settings rule
+    # could approve it. Both are set from the same list so the two can never
+    # disagree about what this run may touch.
+    argv += ["--tools", ",".join(tools)]
+    if tools:
+        argv += ["--allowedTools", ",".join(tools)]
     if system:
         argv += ["--append-system-prompt", system]
     if max_budget_usd:
@@ -94,7 +112,7 @@ def build_argv(*, model: str, allowed_tools: tuple = (),
 
 
 def run(prompt: str, *, model: str = DEFAULT_MODEL, cwd: Path | None = None,
-        allowed_tools: tuple = (), system: str | None = None,
+        tools: tuple = NO_TOOLS, system: str | None = None,
         timeout: int = DEFAULT_TIMEOUT_SECONDS,
         max_budget_usd: float | None = DEFAULT_MAX_BUDGET_USD,
         meta_path: Path | None = None,
@@ -109,7 +127,7 @@ def run(prompt: str, *, model: str = DEFAULT_MODEL, cwd: Path | None = None,
     denials) minus the reply itself — written before the result is judged, so
     a failed agent still leaves something to read in sessions/.
     """
-    argv = build_argv(model=model, allowed_tools=allowed_tools, system=system,
+    argv = build_argv(model=model, tools=tools, system=system,
                       max_budget_usd=max_budget_usd)
     try:
         proc = _run(argv, input=prompt, cwd=None if cwd is None else str(cwd),
@@ -220,6 +238,10 @@ def chat(messages: list[dict], *, model: str, api_key: str = "",
     carries its own credentials, its own output cap, and its own retry on
     overload. Keeping the signature identical is the whole point — it is what
     lets extract_claims() take either backend through the same `chat` argument.
+
+    Runs with no tools at all. The prompt carries the PR description and diff,
+    which are untrusted, and unlike phase 3 this call has no sandboxed
+    workspace confining it — its cwd is wherever the review was started.
     """
     system = "\n\n".join(m["content"] for m in messages
                          if m.get("role") == "system")

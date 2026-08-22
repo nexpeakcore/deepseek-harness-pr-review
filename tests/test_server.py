@@ -257,6 +257,9 @@ def test_trigger_review_no_post_config(tmp_path, monkeypatch):
 
 
 def test_trigger_review_missing_key(tmp_path, monkeypatch):
+    # The key is only the DeepSeek backend's requirement, so the backend has to
+    # be named: otherwise the developer's own .env decides what this asserts.
+    monkeypatch.setenv("HARNESS_PROVIDER", "deepseek")
     monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
     cfg_path = tmp_path / "autoreview.yml"
     cfg_path.write_text("org: sample-org\nrepos:\n  sample-app: auto\n")

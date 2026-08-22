@@ -14,6 +14,7 @@ from pathlib import Path
 
 from src.autoreview_config import auto_repos, list_repos, load_config, \
     remove_repo, set_repo_mode
+from src.config import PROVIDERS
 from src.config import load_config as load_env_config
 from src.gh import gh_available, run_gh
 from src.review_proc import review_lock_alive
@@ -353,6 +354,10 @@ def main(argv: list[str] | None = None) -> int:
 
     cfg = load_config(args.config)
     env = load_env_config()
+    if env.provider not in PROVIDERS:
+        print(f"unknown HARNESS_PROVIDER={env.provider!r} — expected one of: "
+              f"{', '.join(PROVIDERS)}", file=sys.stderr)
+        return 2
     if env.needs_deepseek_key and not env.api_key:
         print("DEEPSEEK_API_KEY not set (see .env.example)", file=sys.stderr)
         return 3

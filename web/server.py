@@ -11,7 +11,7 @@ from fastapi.templating import Jinja2Templates
 from src.autoreview_config import load_config as load_autoreview_config
 from src.autoreview_config import auto_repos, list_repos, remove_repo, set_repo_mode
 from src.autoreview_config import repo_mode as config_repo_mode
-from src.config import load_config
+from src.config import PROVIDERS, load_config
 from src.repo_check import ACTIONABLE, OK, UNKNOWN, check_repo, check_repos
 from src.review_proc import EXIT_TIMEOUT, run_review
 from web import metrics
@@ -467,7 +467,12 @@ def trigger_review(owner: str, repo: str, pr: int):
         raise HTTPException(status_code=400, detail=f"invalid config: {e}")
 
     env = load_config()
-    if not env.api_key:
+    if env.provider not in PROVIDERS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"unknown HARNESS_PROVIDER={env.provider!r} — expected one "
+                   f"of: {', '.join(PROVIDERS)}")
+    if env.needs_deepseek_key and not env.api_key:
         raise HTTPException(status_code=400,
                             detail="DEEPSEEK_API_KEY not set (see .env.example)")
 
