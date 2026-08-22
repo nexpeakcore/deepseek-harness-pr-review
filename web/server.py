@@ -43,8 +43,28 @@ def project_repo() -> dict | None:
     return None
 
 
+def agent_backend() -> dict:
+    """Provider + model that a review started from this dashboard will run on.
+
+    Registered as a callable and read per render, not cached at import: the
+    value is only interesting when it changes, and a cached one would keep
+    claiming DeepSeek after the server was restarted with
+    HARNESS_PROVIDER=claude — exactly the moment the header has a job to do.
+
+    run_review() hands the child process a copy of this process's environment,
+    so what the header shows is what the next review actually uses. It is not a
+    second setting that can drift from the one doing the work.
+    """
+    cfg = load_config()
+    model = cfg.phase_cfg()["model"]
+    model_env = "HARNESS_CLAUDE_MODEL" if cfg.provider == "claude" else "DSH_MODEL"
+    return {"provider": cfg.provider, "model": model,
+            "env": f"HARNESS_PROVIDER={cfg.provider}, {model_env}={model}"}
+
+
 # Set once so base.html can use it without every route threading it through.
 templates.env.globals["project_repo"] = project_repo()
+templates.env.globals["agent_backend"] = agent_backend
 # Stylesheet cache-buster: a CSS change otherwise needs a hard refresh, and
 # the header depends on CSS for layout it must not be broken without.
 try:

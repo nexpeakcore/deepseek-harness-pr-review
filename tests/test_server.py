@@ -757,3 +757,30 @@ def test_stylesheet_is_cache_busted(tmp_path, monkeypatch):
     client, _ = _cfg_client(tmp_path, monkeypatch, lambda args, **kw: [])
     html = client.get("/").text
     assert f'href="/static/style.css?v={src.__version__}"' in html
+
+
+def test_header_names_the_agent_backend(tmp_path, monkeypatch):
+    """A review that quietly ran on the wrong provider must be visible up front.
+
+    The dashboard hands its own environment to every review it starts, so the
+    header is reporting the thing that actually does the work — not a second
+    setting that could disagree with it.
+    """
+    monkeypatch.setenv("HARNESS_PROVIDER", "claude")
+    monkeypatch.setenv("HARNESS_CLAUDE_MODEL", "opus")
+    client, _ = _cfg_client(tmp_path, monkeypatch, lambda args, **kw: [])
+
+    html = client.get("/").text
+    assert "claude · <strong>opus</strong>" in html
+    assert "HARNESS_PROVIDER=claude, HARNESS_CLAUDE_MODEL=opus" in html
+
+
+def test_header_backend_follows_a_restart(tmp_path, monkeypatch):
+    """Read per render, not cached at import — the value only matters when it changes."""
+    monkeypatch.setenv("HARNESS_PROVIDER", "deepseek")
+    monkeypatch.setenv("DSH_MODEL", "deepseek-v4-flash")
+    client, _ = _cfg_client(tmp_path, monkeypatch, lambda args, **kw: [])
+    assert "deepseek · <strong>deepseek-v4-flash</strong>" in client.get("/").text
+
+    monkeypatch.setenv("HARNESS_PROVIDER", "claude")
+    assert "claude · <strong>sonnet</strong>" in client.get("/").text
