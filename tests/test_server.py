@@ -783,4 +783,5 @@ def test_header_backend_follows_a_restart(tmp_path, monkeypatch):
     assert "deepseek · <strong>deepseek-v4-flash</strong>" in client.get("/").text
 
     monkeypatch.setenv("HARNESS_PROVIDER", "claude")
+    monkeypatch.setenv("HARNESS_CLAUDE_MODEL", "sonnet")
     assert "claude · <strong>sonnet</strong>" in client.get("/").text

@@ -111,13 +111,22 @@ def test_run_raises_on_non_json_output():
         claude_cli.run("hi", _run=fake)
 
 
-def test_run_names_the_install_step_when_the_binary_is_missing():
-    """The error a user without Claude Code sees has to say what to do next."""
+def test_run_names_the_install_step_when_the_binary_is_missing(monkeypatch):
+    """The error has to say what to do next — and where it already looked.
+
+    The usual cause is not a missing install but a launcher (launchd, cron)
+    handing the process a PATH without the per-user bin dir: the same review
+    then works by hand and fails on a schedule, which is unreadable unless the
+    PATH is in the message.
+    """
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+
     def fake(argv, **kwargs):
         raise FileNotFoundError(2, "No such file or directory", "claude")
 
-    with pytest.raises(RuntimeError, match="not found on PATH"):
+    with pytest.raises(RuntimeError, match="not found on PATH") as e:
         claude_cli.run("hi", _run=fake)
+    assert "PATH was: /usr/bin:/bin" in str(e.value)
 
 
 def test_run_turns_a_timeout_into_a_named_failure():

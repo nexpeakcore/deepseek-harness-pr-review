@@ -26,6 +26,7 @@ narrowed the same way cordis/minimal.cordis.yml narrows the DeepSeek agent:
   verify.read_part() looks for it.
 """
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -114,10 +115,14 @@ def run(prompt: str, *, model: str = DEFAULT_MODEL, cwd: Path | None = None,
         proc = _run(argv, input=prompt, cwd=None if cwd is None else str(cwd),
                     capture_output=True, text=True, timeout=timeout)
     except FileNotFoundError as e:
+        # The PATH is part of the error because the usual cause is not a
+        # missing install: it is a launcher (launchd, cron, systemd) handing
+        # the process a PATH that omits the per-user bin dir, so the same
+        # review works by hand and fails on a schedule.
         raise RuntimeError(
             f"{BINARY} CLI not found on PATH — install Claude Code "
-            f"(https://claude.com/claude-code), or set HARNESS_PROVIDER=deepseek"
-        ) from e
+            f"(https://claude.com/claude-code), or set HARNESS_PROVIDER=deepseek. "
+            f"PATH was: {os.environ.get('PATH', '(unset)')}") from e
     except subprocess.TimeoutExpired as e:
         raise RuntimeError(f"{BINARY} timed out after {timeout}s") from e
     except OSError as e:
