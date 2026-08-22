@@ -186,6 +186,64 @@ def test_run_meta_failure_never_sinks_the_run(tmp_path):
                           _run=fake) == "fine"
 
 
+# --- retry on a failure that happened inside the API ------------------------
+
+def _sequence(*stdouts):
+    """Fake subprocess.run returning a different stdout per call."""
+    calls = []
+
+    def fake(argv, **kwargs):
+        calls.append(kwargs)
+        return _Proc(stdouts[min(len(calls) - 1, len(stdouts) - 1)])
+
+    return fake, calls
+
+
+API_ERROR = _envelope(is_error=True, terminal_reason="api_error",
+                      result="Not logged in · Please run /login")
+
+
+def test_run_retries_a_failure_inside_the_api():
+    """Four agents once died together on a blip while the CLI was logged in.
+
+    terminal_reason api_error, one turn, zero cost — and because nothing tried
+    twice, one transient moment cost the whole review.
+    """
+    fake, calls = _sequence(API_ERROR, _envelope(result="recovered"))
+    slept = []
+
+    assert claude_cli.run("hi", _run=fake, _sleep=slept.append) == "recovered"
+    assert len(calls) == 2
+    assert slept == [2]
+
+
+def test_run_gives_up_after_the_last_attempt():
+    fake, calls = _sequence(API_ERROR)
+
+    with pytest.raises(RuntimeError, match="after 3 attempts"):
+        claude_cli.run("hi", _run=fake, _sleep=lambda _: None)
+    assert len(calls) == 3
+
+
+def test_run_does_not_retry_what_will_fail_again():
+    """A bad model id costs the review time and reaches the same answer."""
+    fake, calls = _sequence(_envelope(is_error=True,
+                                      subtype="error_during_execution",
+                                      result="unknown model"))
+
+    with pytest.raises(RuntimeError, match="unknown model"):
+        claude_cli.run("hi", _run=fake, _sleep=lambda _: None)
+    assert len(calls) == 1
+
+
+def test_run_reports_why_the_run_ended_not_its_subtype():
+    """subtype stays "success" for a run that died in the API."""
+    fake, _ = _sequence(API_ERROR)
+
+    with pytest.raises(RuntimeError, match=r"failed \(api_error\)"):
+        claude_cli.run("hi", retries=1, _run=fake, _sleep=lambda _: None)
+
+
 # --- salvaging a part file the agent answered inline ------------------------
 
 def test_extract_json_object_reads_a_fenced_reply():

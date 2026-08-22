@@ -34,6 +34,7 @@ import os
 import re
 import shutil
 import subprocess
+import time
 from pathlib import Path
 
 BINARY = "claude"
@@ -59,6 +60,15 @@ DEFAULT_MAX_BUDGET_USD = 5.0
 # a directory that holds nothing to read.
 NO_TOOLS_HINT = ("Answer directly from the information given above. "
                  "Do not use tools.")
+
+# A run that died inside the API rather than on its own terms. Seen for real:
+# four agents launched together all came back at 11s with "Not logged in ·
+# Please run /login" — terminal_reason api_error, one turn, zero cost — while
+# the CLI was logged in the whole time and a ping right after succeeded. A
+# blip like that took down the entire review, because unlike the DeepSeek
+# backend nothing here tried twice.
+RETRY_TERMINAL_REASONS = ("api_error",)
+DEFAULT_RETRIES = 3
 
 
 def available() -> bool:
@@ -115,8 +125,8 @@ def run(prompt: str, *, model: str = DEFAULT_MODEL, cwd: Path | None = None,
         tools: tuple = NO_TOOLS, system: str | None = None,
         timeout: int = DEFAULT_TIMEOUT_SECONDS,
         max_budget_usd: float | None = DEFAULT_MAX_BUDGET_USD,
-        meta_path: Path | None = None,
-        _run=subprocess.run) -> str:
+        meta_path: Path | None = None, retries: int = DEFAULT_RETRIES,
+        _run=subprocess.run, _sleep=time.sleep) -> str:
     """Run one headless turn and return the agent's final text.
 
     The prompt goes over stdin, never argv: a claims prompt carries the PR
@@ -126,9 +136,31 @@ def run(prompt: str, *, model: str = DEFAULT_MODEL, cwd: Path | None = None,
     `meta_path` receives the run envelope (cost, session id, permission
     denials) minus the reply itself — written before the result is judged, so
     a failed agent still leaves something to read in sessions/.
+
+    A run that failed inside the API is retried with the same backoff the
+    DeepSeek backend uses. Everything else — a bad model id, a missing binary,
+    an unparseable reply — fails on the first attempt, because trying it again
+    only spends the review's time to reach the same answer.
     """
     argv = build_argv(model=model, tools=tools, system=system,
                       max_budget_usd=max_budget_usd)
+    for attempt in range(1, max(1, retries) + 1):
+        try:
+            return _attempt(argv, prompt, cwd=cwd, timeout=timeout,
+                            meta_path=meta_path, _run=_run)
+        except _Transient as e:
+            if attempt == max(1, retries):
+                raise RuntimeError(f"{e} (after {attempt} attempts)") from e
+            _sleep(2 * attempt)
+    raise AssertionError("unreachable")
+
+
+class _Transient(RuntimeError):
+    """A failure worth trying again — raised only by _attempt."""
+
+
+def _attempt(argv: list[str], prompt: str, *, cwd, timeout, meta_path,
+             _run) -> str:
     try:
         proc = _run(argv, input=prompt, cwd=None if cwd is None else str(cwd),
                     capture_output=True, text=True, timeout=timeout)
@@ -166,9 +198,15 @@ def run(prompt: str, *, model: str = DEFAULT_MODEL, cwd: Path | None = None,
     result = data.get("result")
     if data.get("is_error") or data.get("subtype") != "success":
         detail = result if isinstance(result, str) and result else stderr
-        raise RuntimeError(
-            f"{BINARY} failed ({data.get('subtype') or 'error'}): "
-            f"{(detail or 'no detail')[:300]}")
+        # subtype stays "success" for a run that died in the API, so the
+        # reason the run ended is what has to be reported and classified —
+        # not the subtype, which would read as a contradiction in the log.
+        reason = data.get("terminal_reason") or data.get("subtype") or "error"
+        message = (f"{BINARY} failed ({reason}): "
+                   f"{(detail or 'no detail')[:300]}")
+        if reason in RETRY_TERMINAL_REASONS or data.get("api_error_status"):
+            raise _Transient(message)
+        raise RuntimeError(message)
     if not isinstance(result, str) or not result.strip():
         raise RuntimeError(f"{BINARY} returned an empty result")
     return result
