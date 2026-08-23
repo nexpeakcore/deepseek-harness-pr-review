@@ -142,11 +142,13 @@ match the sandbox policy the SDK backend runs under:
   the reviewed repo is not loaded** — a PR does not get to configure the agent
   reviewing it.
 - Each agent runs under `--max-budget-usd`, so a loop that stops making
-  progress stops spending.
+  progress stops spending. The ceiling covers the agent, retries included:
+  each attempt is given what is left of it rather than a fresh allowance.
 
 Per-agent cost, session id and any permission denial land in
 `sessions/<owner>/<repo>/pr-<n>/claude-<axis>.json`, next to the existing
-artefacts.
+artefacts. `harness_attempts` and `harness_total_cost_usd` record what every
+attempt cost — the envelope itself only ever describes the last one.
 
 ## Updating
 

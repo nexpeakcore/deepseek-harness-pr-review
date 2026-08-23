@@ -53,6 +53,9 @@ DEFAULT_TIMEOUT_SECONDS = 1800
 
 # Per-agent ceiling, not a target: a review costs cents, so anything near this
 # is a loop that stopped making progress. Guards the account, not the budget.
+# It covers the agent, retries included — each attempt is given what is left of
+# it, never a fresh allowance, or three retries would make the real ceiling
+# three times the advertised one.
 DEFAULT_MAX_BUDGET_USD = 5.0
 
 # claims.py sends a self-contained prompt — everything the model needs is in
@@ -138,6 +141,11 @@ def run(prompt: str, *, model: str = DEFAULT_MODEL, cwd: Path | None = None,
     denials) minus the reply itself — written before the result is judged, so
     a failed agent still leaves something to read in sessions/.
 
+    `max_budget_usd` covers the agent, retries included: each attempt is given
+    what is left of it rather than a fresh allowance, and the run gives up if
+    nothing is left. Otherwise the real ceiling would be the advertised one
+    times the retry count.
+
     A run that failed inside the API is retried with the same backoff the
     DeepSeek backend uses. Everything else — a bad model id, a missing binary,
     an unparseable reply — fails on the first attempt, because trying it again
@@ -148,30 +156,72 @@ def run(prompt: str, *, model: str = DEFAULT_MODEL, cwd: Path | None = None,
     of writing, the caller's salvage sees a file already there, skips, and the
     dead attempt's half-written JSON is read as the result.
     """
-    argv = build_argv(model=model, tools=tools, system=system,
-                      max_budget_usd=max_budget_usd)
-    for attempt in range(1, max(1, retries) + 1):
+    spent = 0.0
+    history = []
+    attempts = max(1, retries)
+
+    for attempt in range(1, attempts + 1):
         for stale in reset_paths:
             try:
                 Path(stale).unlink(missing_ok=True)
             except OSError:
                 pass
-        try:
-            return _attempt(argv, prompt, cwd=cwd, timeout=timeout,
-                            meta_path=meta_path, _run=_run)
-        except _Transient as e:
-            if attempt == max(1, retries):
-                raise RuntimeError(f"{e} (after {attempt} attempts)") from e
-            _sleep(2 * attempt)
+
+        budget = None
+        if max_budget_usd is not None:
+            budget = round(max_budget_usd - spent, 6)
+            if budget <= 0:
+                raise RuntimeError(
+                    f"{BINARY} spent the ${max_budget_usd:.2f} budget across "
+                    f"{attempt - 1} attempts without an answer")
+
+        data, stderr = _attempt(
+            build_argv(model=model, tools=tools, system=system,
+                       max_budget_usd=budget),
+            prompt, cwd=cwd, timeout=timeout, _run=_run)
+
+        cost = data.get("total_cost_usd")
+        spent += cost if isinstance(cost, (int, float)) else 0.0
+        history.append({"attempt": attempt, "total_cost_usd": cost,
+                        "budget_usd": budget,
+                        "subtype": data.get("subtype"),
+                        "terminal_reason": data.get("terminal_reason"),
+                        "is_error": bool(data.get("is_error"))})
+        if meta_path is not None:
+            _write_meta(meta_path, data, history, spent)
+
+        result = data.get("result")
+        if not data.get("is_error") and data.get("subtype") == "success":
+            if isinstance(result, str) and result.strip():
+                return result
+            raise RuntimeError(f"{BINARY} returned an empty result")
+
+        detail = result if isinstance(result, str) and result else stderr
+        # subtype stays "success" for a run that died in the API, so the reason
+        # the run ended is what has to be reported and classified — not the
+        # subtype, which would read as a contradiction in the log.
+        reason = data.get("terminal_reason") or data.get("subtype") or "error"
+        message = (f"{BINARY} failed ({reason}): "
+                   f"{(detail or 'no detail')[:300]}")
+        retryable = (reason in RETRY_TERMINAL_REASONS
+                     or bool(data.get("api_error_status")))
+        if not retryable or attempt == attempts:
+            if attempt > 1:
+                message += f" (after {attempt} attempts, ${spent:.2f} spent)"
+            raise RuntimeError(message)
+        _sleep(2 * attempt)
     raise AssertionError("unreachable")
 
 
-class _Transient(RuntimeError):
-    """A failure worth trying again — raised only by _attempt."""
+def _attempt(argv: list[str], prompt: str, *, cwd, timeout,
+             _run) -> tuple[dict, str]:
+    """One process. Returns (envelope, stderr); raises only for hard failures.
 
-
-def _attempt(argv: list[str], prompt: str, *, cwd, timeout, meta_path,
-             _run) -> str:
+    Hard means an outcome a second attempt cannot change — no binary, a
+    timeout, output that is not the JSON envelope. Whether the run itself
+    succeeded is the caller's to judge, because only the caller knows what has
+    already been spent trying.
+    """
     try:
         proc = _run(argv, input=prompt, cwd=None if cwd is None else str(cwd),
                     capture_output=True, text=True, timeout=timeout)
@@ -202,30 +252,20 @@ def _attempt(argv: list[str], prompt: str, *, cwd, timeout, meta_path,
             f"{BINARY} returned non-JSON output ({e}): {stdout[:300]}") from e
     if not isinstance(data, dict):
         raise RuntimeError(f"{BINARY} returned an unexpected payload shape")
-
-    if meta_path is not None:
-        _write_meta(meta_path, data)
-
-    result = data.get("result")
-    if data.get("is_error") or data.get("subtype") != "success":
-        detail = result if isinstance(result, str) and result else stderr
-        # subtype stays "success" for a run that died in the API, so the
-        # reason the run ended is what has to be reported and classified —
-        # not the subtype, which would read as a contradiction in the log.
-        reason = data.get("terminal_reason") or data.get("subtype") or "error"
-        message = (f"{BINARY} failed ({reason}): "
-                   f"{(detail or 'no detail')[:300]}")
-        if reason in RETRY_TERMINAL_REASONS or data.get("api_error_status"):
-            raise _Transient(message)
-        raise RuntimeError(message)
-    if not isinstance(result, str) or not result.strip():
-        raise RuntimeError(f"{BINARY} returned an empty result")
-    return result
+    return data, stderr
 
 
-def _write_meta(path: Path, data: dict) -> None:
-    """Save the run envelope next to the other session artefacts. Never fatal."""
+def _write_meta(path: Path, data: dict, history: list, spent: float) -> None:
+    """Save the run envelope next to the other session artefacts. Never fatal.
+
+    The envelope describes the last attempt only, and each attempt overwrites
+    this file — so a run that burned two attempts before answering would report
+    the cheap one and hide the cost of the rest. The harness_* keys carry what
+    the envelope cannot: what every attempt cost, and the total.
+    """
     meta = {k: v for k, v in data.items() if k != "result"}
+    meta["harness_attempts"] = history
+    meta["harness_total_cost_usd"] = round(spent, 6)
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(meta, indent=2))

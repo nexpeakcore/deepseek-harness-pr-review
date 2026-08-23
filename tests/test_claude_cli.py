@@ -273,6 +273,72 @@ def test_run_reports_why_the_run_ended_not_its_subtype():
         claude_cli.run("hi", retries=1, _run=fake, _sleep=lambda _: None)
 
 
+# --- the budget covers the agent, not each attempt --------------------------
+
+def _budgets(argvs):
+    """The --max-budget-usd value passed on each call, in order."""
+    return [float(a[a.index("--max-budget-usd") + 1]) for a in argvs
+            if "--max-budget-usd" in a]
+
+
+def _sequence_argv(*stdouts):
+    argvs = []
+
+    def fake(argv, **kwargs):
+        argvs.append(argv)
+        return _Proc(stdouts[min(len(argvs) - 1, len(stdouts) - 1)])
+
+    return fake, argvs
+
+
+def test_retry_is_given_what_is_left_of_the_budget():
+    """Three retries must not make the real ceiling three times the stated one."""
+    costly = _envelope(is_error=True, terminal_reason="api_error",
+                       result="died", total_cost_usd=2.0)
+    fake, argvs = _sequence_argv(costly, costly, _envelope(result="ok"))
+
+    assert claude_cli.run("hi", max_budget_usd=5.0, _run=fake,
+                          _sleep=lambda _: None) == "ok"
+    assert _budgets(argvs) == [5.0, 3.0, 1.0]
+
+
+def test_run_stops_once_the_budget_is_gone():
+    """An exhausted ceiling ends the agent — it does not buy another attempt."""
+    costly = _envelope(is_error=True, terminal_reason="api_error",
+                       result="died", total_cost_usd=4.0)
+    fake, argvs = _sequence_argv(costly)
+
+    with pytest.raises(RuntimeError, match=r"spent the \$5.00 budget"):
+        claude_cli.run("hi", max_budget_usd=5.0, retries=5, _run=fake,
+                       _sleep=lambda _: None)
+    # Two attempts fit under $5; the third would have started with nothing.
+    assert _budgets(argvs) == [5.0, 1.0]
+
+
+def test_meta_records_every_attempt_not_just_the_last(tmp_path):
+    """Each attempt overwrites the sidecar, so the cheap survivor would be the
+    only cost on record and the expensive failures would vanish."""
+    meta = tmp_path / "claude-docs.json"
+    fake, _ = _sequence(
+        _envelope(is_error=True, terminal_reason="api_error",
+                  result="died", total_cost_usd=1.5),
+        _envelope(result="ok", total_cost_usd=0.25))
+
+    claude_cli.run("hi", meta_path=meta, _run=fake, _sleep=lambda _: None)
+
+    saved = json.loads(meta.read_text())
+    assert saved["harness_total_cost_usd"] == 1.75
+    assert [a["attempt"] for a in saved["harness_attempts"]] == [1, 2]
+    assert saved["total_cost_usd"] == 0.25  # the envelope still describes the last
+
+
+def test_no_budget_means_no_budget_flag():
+    fake, argvs = _sequence_argv(_envelope(result="ok"))
+
+    claude_cli.run("hi", max_budget_usd=None, _run=fake)
+    assert "--max-budget-usd" not in argvs[0]
+
+
 # --- salvaging a part file the agent answered inline ------------------------
 
 def test_extract_json_object_reads_a_fenced_reply():
