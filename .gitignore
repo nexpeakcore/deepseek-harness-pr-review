@@ -15,3 +15,5 @@ autoreview.lock
 **/.DS_Store
 autoreview.yml
 .agent-slots/
+dashboard.log
+.env.bak.*
