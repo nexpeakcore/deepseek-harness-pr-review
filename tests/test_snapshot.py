@@ -191,3 +191,29 @@ def test_build_snapshot_truncates_long_issue_body(tmp_path):
     }
     result = build_snapshot("demo", "app", 7, tmp_path, gh=_gh_fake(registry))
     assert len(result["linked_issues"][0]["body"]) == ISSUE_BODY_MAX
+
+
+def test_diff_fingerprint_ignores_everything_but_the_diff():
+    from src.snapshot import diff_fingerprint
+
+    a = [{"filename": "x.py", "status": "modified", "additions": 2,
+          "deletions": 1, "patch": "@@ -1 +1 @@\n-a\n+b"}]
+    # Line counts are derived from the patch, so they carry no information the
+    # patch does not already carry — and order is the API's, not the PR's.
+    b = [{**a[0], "additions": 99, "deletions": 99}]
+    assert diff_fingerprint(a) == diff_fingerprint(b)
+
+    two = a + [{"filename": "y.py", "status": "added", "additions": 1,
+                "deletions": 0, "patch": "@@ -0,0 +1 @@\n+z"}]
+    assert diff_fingerprint(two) == diff_fingerprint(list(reversed(two)))
+
+
+def test_diff_fingerprint_reacts_to_a_real_change():
+    from src.snapshot import diff_fingerprint
+
+    a = [{"filename": "x.py", "status": "modified", "patch": "@@\n+granted"}]
+    assert diff_fingerprint(a) != diff_fingerprint(
+        [{**a[0], "patch": "@@\n+denied"}])
+    assert diff_fingerprint(a) != diff_fingerprint(
+        [{**a[0], "filename": "renamed.py"}])
+    assert diff_fingerprint(a) != diff_fingerprint([])

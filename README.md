@@ -51,7 +51,7 @@ and live demo data are included — see [Web dashboard](#web-dashboard).
 | ✅ **Parallel agents** | One agent per review axis (claims / docs / impact), claims sharded past 15 — so a 40-claim PR cannot starve the docs check. Concurrency is capped globally across every review process |
 | ✅ **Ranked doc targets** | Docs are scored against the diff (path proximity, changed symbols, file mentions) before any agent runs — the agent verifies a bounded, reproducible list instead of grepping the repo |
 | ✅ **Repo config that stays true** | Adding a repo verifies it exists and is visible to your token first, so a typo cannot become a permanent config entry. `autoreview --check-repos` (and the /config page) flags entries GitHub can no longer reach and removes them in one click |
-| ✅ **Auto review poller** | Reviews new PRs automatically, re-reviews when the head commit changes |
+| ✅ **Auto review poller** | Reviews new PRs automatically, and re-reviews when the *diff* changes — not merely when the head SHA does. A rebase, a merge of the base branch, an amended message or an empty commit moves the head without changing a line, and each one used to cost a full agent fan-out and a fresh notification saying exactly what the last round said |
 | ✅ **Web dashboard** | Repo config management, review triggers (Review now), live review logs, metrics: risks found, doc errors, verdicts, review rounds per repo |
 | ✅ **Idempotent PR comments** | One English comment per PR, updated in place — never duplicated |
 | ✅ **Traceable** | Every phase writes structured JSON to `sessions/` |
