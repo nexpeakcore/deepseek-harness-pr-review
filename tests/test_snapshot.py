@@ -217,3 +217,38 @@ def test_diff_fingerprint_reacts_to_a_real_change():
     assert diff_fingerprint(a) != diff_fingerprint(
         [{**a[0], "filename": "renamed.py"}])
     assert diff_fingerprint(a) != diff_fingerprint([])
+
+
+def test_diff_fingerprint_separates_changes_github_cannot_diff():
+    """GitHub omits `patch` for binary files and oversized diffs.
+
+    Hashing only the patch gives two different versions of the same binary the
+    same fingerprint, and the poller skips a real change — the one direction
+    this must never fail in. The blob sha is what tells them apart.
+    """
+    from src.snapshot import diff_fingerprint
+
+    before = [{"filename": "docs/logo.png", "status": "modified",
+               "sha": "1111111", "patch": ""}]
+    after = [{**before[0], "sha": "2222222"}]
+    assert diff_fingerprint(before) != diff_fingerprint(after)
+
+
+def test_diff_fingerprint_reacts_when_only_the_base_moved():
+    """The patch is not redundant with the blob either.
+
+    A file can keep its content — same blob sha — while its diff changes,
+    because the base moved underneath it.
+    """
+    from src.snapshot import diff_fingerprint
+
+    a = [{"filename": "x.py", "status": "modified", "sha": "same",
+          "patch": "@@ -1 +1 @@\n-a\n+b"}]
+    b = [{**a[0], "patch": "@@ -1,2 +1,2 @@\n-a\n-c\n+b"}]
+    assert diff_fingerprint(a) != diff_fingerprint(b)
+
+
+def test_normalize_files_keeps_the_blob_sha():
+    from src.snapshot import normalize_files
+
+    assert normalize_files([{"filename": "a", "sha": "deadbeef"}])[0]["sha"] == "deadbeef"

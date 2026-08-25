@@ -90,6 +90,7 @@ def normalize_files(raw: list[dict]) -> list[dict]:
         {
             "filename": f.get("filename", ""),
             "status": f.get("status", ""),
+            "sha": f.get("sha", ""),
             "additions": f.get("additions", 0),
             "deletions": f.get("deletions", 0),
             "patch": f.get("patch", ""),
@@ -117,17 +118,28 @@ def diff_fingerprint(files: list[dict]) -> str:
     changing a line of the diff, and re-reviewing those costs a full agent
     fan-out and a fresh notification for every subscriber to say nothing new.
 
-    Only filename, status and patch go in. additions/deletions are derived
-    from the patch, and the head SHA is the thing being deliberately ignored.
+    filename, status, blob sha and patch go in. additions/deletions do not —
+    the patch already carries them — and neither does the head SHA, which is
+    the thing being deliberately ignored.
+
+    The blob sha is not redundant with the patch, in either direction:
+
+    - GitHub omits `patch` for binary files and oversized diffs. Hashing only
+      the patch would give two different versions of the same binary the same
+      fingerprint, and the poller would skip a real change — the one direction
+      this must never fail in.
+    - The patch is not redundant with the blob either: a file can keep its
+      content while its diff changes, because the base moved underneath it.
+
+    A snapshot written before `sha` was recorded fingerprints differently from
+    a fresh fetch of the same diff, so each PR gets one extra review after this
+    ships and then settles. That is the safe direction, and it self-heals.
     """
     digest = hashlib.sha256()
     for f in sorted(files, key=lambda f: f.get("filename", "")):
-        digest.update(f.get("filename", "").encode())
-        digest.update(b"\0")
-        digest.update(f.get("status", "").encode())
-        digest.update(b"\0")
-        digest.update((f.get("patch") or "").encode())
-        digest.update(b"\0")
+        for field in ("filename", "status", "sha", "patch"):
+            digest.update((f.get(field) or "").encode())
+            digest.update(b"\0")
     return digest.hexdigest()
 
 

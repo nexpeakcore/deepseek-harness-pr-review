@@ -254,7 +254,7 @@ a CONTRADICTED verdict + FABRICATED doc), useful for screenshots and documentati
 
 ## Auto review
 
-Poll GitHub for new PRs (and head-SHA changes) and review them automatically in
+Poll GitHub for new PRs (and changes to their diff) and review them automatically in
 batch mode. Each repo is configured `auto` (poller reviews its PRs) or `manual`
 (poller skips it; review via CLI). Edit `autoreview.yml` directly, via CLI, or
 from the web dashboard (Config page → toggle Auto/Manual).
@@ -324,8 +324,12 @@ cp com.nexpeak.pr-review.plist ~/Library/LaunchAgents/
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.nexpeak.pr-review.plist
 ```
 
-Re-review rules: head SHA in the PR changed vs the last snapshot → all phases
+Re-review rules: the PR's **diff** changed vs the last snapshot → all phases
 re-run with `--force`; the PR comment is updated in place (never duplicated).
+A head that moved without changing the diff — a rebase, a merge of the base
+branch, an amended message, an empty commit — is logged as `SKIP-NO-CHANGE`
+and costs nothing. A PR whose last review never finished is always re-run,
+however unchanged its diff looks.
 
 ## Configuration
 

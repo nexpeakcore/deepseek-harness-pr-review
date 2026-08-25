@@ -5,8 +5,9 @@
 
 ## Goal
 
-Automatically run PR reviews when new PRs are opened (and re-review when the PR
-head commit changes) on a configurable list of repos, using a local poller. Runs
+Automatically run PR reviews when new PRs are opened (and re-review when the
+PR's diff changes — not merely when its head commit moves) on a configurable
+list of repos, using a local poller. Runs
 on the user's machine — no cloud infra. Review runs in batch mode (`--skip-human`)
 and posts the report comment to the PR.
 
@@ -56,8 +57,11 @@ autoreview.log          # per-run log (auto-created)
 2. Skip drafts if `drafts: false`
 3. For each PR:
    - No `sessions/<o>/<r>/pr-<n>/snapshot.json` → NEW → review
-   - Snapshot exists but `head_sha` != current `head.sha` → RE-RUN → review
-   - Head matches → SKIP
+   - Last review never finished (findings older than snapshot) → RE-RUN
+   - `head_sha` matches → SKIP
+   - `head_sha` moved: compare `diff_fingerprint` of the live files against
+     the snapshot's. Different → RE-RUN. Same → SKIP-NO-CHANGE, and the head
+     is recorded in `same-diff-heads.json` so the next pass costs no API call
 4. Dispatch via `run.main([owner/repo, n, --skip-human])`; add `--no-post`
    when `post_comment: false` in config
 5. Log per PR: `NEW|RE-RUN|SKIPPED|FAILED <owner/repo>#<n> — reason`
