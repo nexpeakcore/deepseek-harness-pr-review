@@ -78,7 +78,9 @@ the header reports what it found rather than what the author claimed.</p>
   <li><b>Human-in-the-loop</b> — ≤20-word confirmation questions only when the
   agent cannot decide. It never guesses</li>
   <li><b>Auto review poller</b> — watches your repos, reviews every new PR and
-  re-reviews when the head commit changes</li>
+  re-reviews when the <i>diff</i> changes. A rebase, a merge of the base branch
+  or an amended message moves the head without changing a line, and costs
+  nothing</li>
   <li><b>Web dashboard</b> — per-repo KPIs: risks found, doc errors, verdicts, review
   rounds</li>
 </ul>

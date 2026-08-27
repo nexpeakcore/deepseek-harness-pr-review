@@ -331,6 +331,16 @@ branch, an amended message, an empty commit — is logged as `SKIP-NO-CHANGE`
 and costs nothing. A PR whose last review never finished is always re-run,
 however unchanged its diff looks.
 
+Two consequences worth knowing:
+
+- The report's `Review complete … commit <sha>` line names the commit that was
+  actually reviewed. After a `SKIP-NO-CHANGE` the PR's head has moved past it,
+  so the SHA can trail the branch by design — the diff it reviewed is still the
+  diff the PR has.
+- Sessions reviewed before the diff-based rule shipped fingerprint differently
+  from a fresh fetch, so each open PR gets one extra review the first time the
+  poller sees it, and then settles.
+
 ## Configuration
 
 | Env | Default | Meaning |
