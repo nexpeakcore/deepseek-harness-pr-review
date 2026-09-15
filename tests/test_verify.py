@@ -590,6 +590,62 @@ def test_the_verifier_reads_the_diff_and_rejects_what_predates_the_pr(tmp_path):
     assert "predates this PR" in prompt
 
 
+def test_a_pr_directory_sharing_the_prefix_is_left_alone(tmp_path):
+    """Codex review on #27: clearing by pattern deleted a directory the PR
+    itself committed — code that should have been reviewed."""
+    ws, sd = _dirs(tmp_path)
+    theirs = ws / ".harness-review-theirs"
+    theirs.mkdir()
+    (theirs / "keep.py").write_text("x = 1\n")
+    for _ in range(2):
+        run_verify({"model": "m"}, ws, sd, SNAP, _claims(1),
+                   runner=_fake_runner(PAYLOADS))
+    assert (theirs / "keep.py").read_text() == "x = 1\n"
+    assert len(list(ws.glob(".harness-review-*"))) == 2     # theirs + this round's
+
+
+def test_a_verifier_id_that_is_not_a_string_is_ignored(tmp_path):
+    """Codex review on #27: an unhashable id crashed the membership test."""
+    ws, sd = _dirs(tmp_path)
+    base = _fake_runner(PAYLOADS)
+
+    def runner(cfg, workspace, session_dir, task):
+        if task["axis"] != "code-verify":
+            return base(cfg, workspace, session_dir, task)
+        (workspace / task["out"]).write_text(json.dumps({"verdicts": [
+            {"id": ["K1"], "verdict": "REJECTED"},
+            {"id": "K2", "verdict": "CONFIRMED"}]}))
+        return "log"
+
+    findings = run_verify({"model": "m"}, ws, sd, SNAP, _claims(1), runner=runner)
+    assert findings["code_rejected"] == []
+    assert {i["id"]: i["verified"] for i in findings["code"]} == {
+        "K1": None, "K2": True, "K3": None}
+
+
+def test_review_input_is_utf8_whatever_the_locale(tmp_path):
+    """Found by this PR's fourth review: with no explicit encoding, a diff
+    carrying a non-ASCII character crashed the review under a non-UTF-8
+    locale. Run the write in a child process that has such a locale."""
+    import os
+    import subprocess
+    import sys
+
+    text = "đã sửa — ✓"
+    code = ("import sys, locale, pathlib; from src.verify import _write_input; "
+            "_write_input(pathlib.Path(sys.argv[1]), sys.argv[2]); "
+            "print(locale.getencoding())")
+    env = {**os.environ, "PYTHONUTF8": "0", "LC_ALL": "en_US.ISO8859-1",
+           "LANG": "en_US.ISO8859-1", "PYTHONPATH": "."}
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    proc = subprocess.run([sys.executable, "-c", code, str(tmp_path / "d.patch"), text],
+                          capture_output=True, text=True, env=env, cwd=root)
+    if proc.returncode == 0 and proc.stdout.strip().lower().replace("-", "") == "utf8":
+        pytest.skip("no non-UTF-8 locale available here")
+    assert proc.returncode == 0, proc.stderr
+    assert (tmp_path / "d.patch").read_bytes() == text.encode("utf-8")
+
+
 # --- agent backend selection ------------------------------------------------
 
 def test_select_runner_defaults_to_the_sdk_backend():

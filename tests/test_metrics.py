@@ -160,7 +160,7 @@ def test_pr_record_counts_code_issues_as_bugs(tmp_path):
     assert rec["bugs"] == 2                       # BLOCKER + MAJOR, not MINOR
     assert rec["bug_breakdown"]["code_blocker"] == 1
     assert rec["code_verdict"] == "BLOCKER"
-    assert rec["code_label"] == "Code: 1 blocker · 1 major · 1 minor"
+    assert rec["code_label"] == "Code: 1 blocker · 1 major · 1 minor (1 unconfirmed)"
     assert rec["code_counts"]["by_category"] == {"security": 1, "correctness": 2}
     detail = metrics.pr_detail(tmp_path, "o", "r", 7)
     assert detail["code_reviewed"] is True

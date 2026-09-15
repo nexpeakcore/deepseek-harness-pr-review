@@ -414,26 +414,41 @@ def _write_input(path: Path, content: str) -> None:
                            f"the PR has a directory at that path")
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL
                  | getattr(os, "O_NOFOLLOW", 0), 0o644)
-    with os.fdopen(fd, "w") as f:
+    # Explicit: the locale's default may not be UTF-8, and a diff carrying an
+    # accented letter or an em dash would then fail the whole review here.
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
         f.write(content)
 
 
-def _fresh_input_dir(workspace: Path) -> str:
+INPUT_DIR_RECORD = "input-dir.txt"
+
+
+def _fresh_input_dir(workspace: Path, session_dir: Path) -> str:
     """A new directory for this review's input files, one the PR cannot name.
 
     Any fixed name can be pre-empted by the PR being reviewed: a symlink there
     redirects the write out of the workspace, a directory there aborts the
-    review. mkdtemp's random name cannot be. Earlier rounds' directories are
-    cleared first — real directories only; anything else matching the pattern
-    is the PR's, and is neither followed nor removed.
+    review. mkdtemp's random name cannot be.
+
+    The previous round's directory is removed by the name recorded for it in
+    the session, never by pattern: a directory the PR itself commits under the
+    same prefix is the PR's code — to be reviewed, not deleted.
     """
     import shutil
     import tempfile
 
-    for old in workspace.glob(".harness-review-*"):
-        if old.is_dir() and not old.is_symlink():
-            shutil.rmtree(old, ignore_errors=True)
-    return Path(tempfile.mkdtemp(prefix=".harness-review-", dir=workspace)).name
+    record = session_dir / INPUT_DIR_RECORD
+    try:
+        old = workspace / record.read_text().strip()
+    except OSError:
+        old = None
+    if (old is not None and old.parent == workspace
+            and old.name.startswith(".harness-review-")
+            and old.is_dir() and not old.is_symlink()):
+        shutil.rmtree(old, ignore_errors=True)
+    name = Path(tempfile.mkdtemp(prefix=".harness-review-", dir=workspace)).name
+    record.write_text(name)
+    return name
 
 
 def run_verify(cfg: dict, workspace: Path, session_dir: Path, snapshot: dict,
@@ -442,9 +457,10 @@ def run_verify(cfg: dict, workspace: Path, session_dir: Path, snapshot: dict,
     runner = runner or select_runner(cfg)
     session_dir.mkdir(parents=True, exist_ok=True)
     doc_candidates = rank_docs(workspace, snapshot, claims)
-    tasks = plan_tasks(snapshot, claims, doc_candidates,
-                       code=cfg.get("code_review", True),
-                       input_dir=_fresh_input_dir(workspace))
+    code = cfg.get("code_review", True)
+    tasks = plan_tasks(snapshot, claims, doc_candidates, code=code,
+                       input_dir=_fresh_input_dir(workspace, session_dir)
+                       if code else "")
 
     # A part file left by the previous round would be read as this round's
     # result if its agent fails — re-review must start from nothing.
@@ -556,8 +572,12 @@ def _finish_code_axis(cfg: dict, workspace: Path, session_dir: Path,
                 # A verifier speaks only for the issues it was given: a verdict
                 # on another batch's id would override that batch's answer.
                 mine = {i["id"] for i in task["issues"]}
+                # String ids only: a list or dict id is unhashable and would
+                # crash the membership test, and with it the whole review.
                 verdicts.extend(v for v in part["verdicts"]
-                                if isinstance(v, dict) and v.get("id") in mine)
+                                if isinstance(v, dict)
+                                and isinstance(v.get("id"), str)
+                                and v["id"] in mine)
         meta["verify"] = ("failed" if failed == len(tasks)
                           else "partial" if failed else "ok")
     kept, rejected = code_review.apply_verdicts(issues, verdicts)

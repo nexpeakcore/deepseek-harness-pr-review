@@ -83,6 +83,12 @@ and still measures only the description. The code verdict sits beside it:
 Merging them would make one word carry two unrelated measurements — the same
 mistake "Risks found" made with numbers.
 
+Notes follow the label in parentheses: `partial` when a code agent failed or
+a changed file could not be diffed, and `N unconfirmed` when a BLOCKER or
+MAJOR was never confirmed — `Code: 1 blocker (partial, 1 unconfirmed)`. The
+round ping carries only this label, so an unconfirmed blocker must not read
+like a confirmed one.
+
 ### Metrics
 
 | Metric | Counts |
@@ -123,14 +129,19 @@ Not posted inline, but kept in the report:
   twice, a moved issue is not posted again, and a new same-titled issue next
   to a moved one is still posted. Pairing by position, then by count, both got
   that last case wrong. Comments from before the digest carry the key alone and
-  each absorbs one moved issue by count.
+  each absorbs one moved issue by count. Only comments by the token's own user
+  count — anyone can type a marker into a comment, and a planted one would
+  suppress a finding — and an outdated comment's `original_line`, a coordinate
+  in an older commit, never claims a line of the current diff.
 
 The diff files the code agents read live in the PR's own checkout, where the
 PR could commit a symlink — or a directory — at any name it can predict. So
 they go into a directory created fresh for every review (`mkdtemp`,
 `.harness-review-<random>`), which the PR cannot name in advance, and are
-created with `O_EXCL | O_NOFOLLOW` besides. The previous round's directory is
-cleared at the start of the next. `normalize_issues()` drops an issue with no
+created with `O_EXCL | O_NOFOLLOW` besides. The directory is created only when
+the code axis runs. The previous round's directory is removed by the name
+recorded for it in the session (`input-dir.txt`), never by pattern: the PR may
+have a directory of its own under that prefix, and that is code to review. `normalize_issues()` drops an issue with no
 scenario, so the rule holds even when a model ignores the prompt.
 
 GitHub sends no patch for a text file whose diff is too large. The head

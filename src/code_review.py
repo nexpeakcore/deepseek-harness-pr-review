@@ -286,7 +286,7 @@ def apply_verdicts(issues: list[dict],
     """
     by_id = {}
     for v in verdicts or []:
-        if isinstance(v, dict) and v.get("id"):
+        if isinstance(v, dict) and isinstance(v.get("id"), str):
             by_id[v["id"]] = v
     kept, rejected = [], []
     for issue in issues:
@@ -347,8 +347,18 @@ def code_verdict_label(findings: dict) -> str:
     else:
         label = "Code: " + " · ".join(parts)
     meta = findings.get("code_meta") or {}
+    notes = []
     if meta.get("failed_shards") or meta.get("patchless_files"):
-        label += " (partial)"
+        notes.append("partial")
+    # The round ping carries only this label, so an issue the verifier never
+    # confirmed must not read like one it did.
+    unconfirmed = sum(1 for i in findings.get("code") or []
+                      if i.get("severity") in VERIFIED_SEVERITIES
+                      and i.get("verified") is not True)
+    if unconfirmed:
+        notes.append(f"{unconfirmed} unconfirmed")
+    if notes:
+        label += f" ({', '.join(notes)})"
     return label
 
 
@@ -418,7 +428,10 @@ def plan_inline(issues: list[dict], files: list[dict],
         if not m:
             continue
         key, anchor = m.group(1), m.group(2)
-        spot = (c.get("path"), c.get("line") or c.get("original_line"))
+        # `line` only: an outdated comment has none, and its original_line is
+        # a coordinate in an older commit, not a line of this diff. Such a
+        # comment is still matched by its digest.
+        spot = (c.get("path"), c.get("line"))
         at_spot[spot] = (key, anchor)
         if anchor:
             anchored[key, anchor] = anchored.get((key, anchor), 0) + 1
@@ -474,9 +487,16 @@ def post_inline_review(owner: str, repo: str, n: int, snapshot: dict,
     """
     if not reviewed(findings):
         return {"posted": 0, "skipped": {}}
-    existing = gh(["api", f"repos/{owner}/{repo}/pulls/{n}/comments", "--paginate"])
+    existing = gh(["api", f"repos/{owner}/{repo}/pulls/{n}/comments",
+                   "--paginate"]) or []
+    # Only this tool's own markers count: anyone can type one into a comment,
+    # and a planted marker would suppress a confirmed finding on its line.
+    if any(INLINE_MARKER_RE.search(c.get("body") or "") for c in existing):
+        me = (gh(["api", "user"]) or {}).get("login")
+        existing = [c for c in existing
+                    if me and (c.get("user") or {}).get("login") == me]
     comments, skipped = plan_inline(findings.get("code", []),
-                                    snapshot.get("files", []), existing or [])
+                                    snapshot.get("files", []), existing)
     if not comments:
         return {"posted": 0, "skipped": skipped}
     payload = {

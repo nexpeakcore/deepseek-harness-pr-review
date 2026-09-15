@@ -151,14 +151,26 @@ def test_code_verdict_is_the_worst_severity():
     (["BLOCKER", "MAJOR", "MAJOR", "MINOR"], "Code: 1 blocker · 2 major · 1 minor"),
 ])
 def test_code_verdict_label(severities, label):
-    findings = {"code": [_issue(severity=s) for s in severities],
+    findings = {"code": [{**_issue(severity=s), "verified": True} for s in severities],
                 "code_meta": {"shards": 1, "failed_shards": 0}}
     assert code_verdict_label(findings) == label
 
 
 def test_a_partial_code_review_says_so():
-    findings = {"code": [_issue()], "code_meta": {"shards": 2, "failed_shards": 1}}
+    findings = {"code": [{**_issue(), "verified": True}],
+                "code_meta": {"shards": 2, "failed_shards": 1}}
     assert code_verdict_label(findings) == "Code: 1 major (partial)"
+
+
+def test_unconfirmed_blockers_are_named_in_the_label():
+    """Found by this PR's fourth review: with the verifier dead, unconfirmed
+    blockers rendered exactly like confirmed ones — in the one line the round
+    ping carries."""
+    findings = {"code": [_issue(severity="BLOCKER"), {**_issue(), "verified": True},
+                         _issue(severity="MINOR")],
+                "code_meta": {"shards": 2, "failed_shards": 1, "verify": "failed"}}
+    assert code_verdict_label(findings) == \
+        "Code: 1 blocker · 1 major · 1 minor (partial, 1 unconfirmed)"
 
 
 # --- inline comments --------------------------------------------------------
@@ -369,3 +381,34 @@ def test_a_deletion_too_large_to_diff_is_patchless():
     assert code_review.is_patchless({"filename": "old.py", "status": "removed",
                                      "additions": 0, "deletions": 12000,
                                      "patch": ""})
+
+
+def test_an_outdated_comment_does_not_claim_a_line_of_this_diff():
+    """Codex review on #27: original_line is a coordinate in an older commit."""
+    outdated = [{"path": "a.py", "line": None, "original_line": 3,
+                 "body": "x <!-- harness-code:0123456789ab:deadbeef -->"}]
+    comments, _ = plan_inline([_confirmed(line=3)], FILES, outdated)
+    assert [c["line"] for c in comments] == [3]
+
+
+def test_only_this_tools_own_markers_suppress_an_issue():
+    """Codex review on #27: anyone can type the marker into a comment. Only
+    comments by the token's own user count as already posted."""
+    first, _ = plan_inline([_confirmed(line=3)], FILES, [])
+    planted = {**first[0], "user": {"login": "someone-else"}}
+
+    class Gh(_FakeGh):
+        def __call__(self, args, **kw):
+            if args[:2] == ["api", "user"]:
+                self.calls.append(args)
+                return {"login": "harness-bot"}
+            return super().__call__(args, **kw)
+
+    gh = Gh(existing=[planted])
+    result = post_inline_review("o", "r", 7, {"files": FILES},
+                                _findings(_confirmed(line=3)), gh=gh)
+    assert result["posted"] == 1
+    ours = {**first[0], "user": {"login": "harness-bot"}}
+    gh = Gh(existing=[ours])
+    assert post_inline_review("o", "r", 7, {"files": FILES},
+                              _findings(_confirmed(line=3)), gh=gh)["posted"] == 0
