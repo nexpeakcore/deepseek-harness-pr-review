@@ -37,6 +37,10 @@ human ever looks at it.</p>
 
 <h2>What the automated review checks</h2>
 <ul>
+  <li><b>Code defects</b> — the changed code is reviewed for correctness,
+  error handling, security, concurrency, resources, performance and missing
+  tests. Every issue names a concrete failure scenario; Blocker and Major ones
+  are re-checked by a second agent, and confirmed ones are posted inline</li>
   <li><b>PR description truth</b> — each claim in the description is verified
   against the code with <code>file:line</code> evidence. Verdicts: Matches,
   Partial, Mismatch, Unverified</li>
@@ -78,8 +82,8 @@ repos:
 autoreview --daemon</code></pre>
 
 <h2>Step 4 — See the results</h2>
-<p>The web dashboard shows per-repo KPIs: PRs reviewed, risks found,
-doc errors, verdict distribution, and review rounds:</p>
+<p>The web dashboard shows per-repo KPIs: PRs reviewed, bugs found, items
+that need a look, doc errors, verdict distribution, and review rounds:</p>
 <pre><code>harness-pr-review web   # open http://127.0.0.1:6789</code></pre>
 
 <h2>What happens when the agent is uncertain</h2>

@@ -22,6 +22,7 @@ import sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+from src import code_review
 from src.agent_pool import agent_slot, max_agents
 from src.docs_rank import rank_docs
 
@@ -84,12 +85,33 @@ def _run_git(args: list[str], cwd: Path) -> None:
         raise RuntimeError(f"git {' '.join(args)} failed: {proc.stderr.strip()}")
 
 
+class StaleSnapshotError(RuntimeError):
+    """The snapshot names a PR head that can no longer be fetched.
+
+    Its own type, so the caller can drop the stale snapshot: kept on disk, it
+    would send every later run back to the same missing commit.
+    """
+
+
+def _has_commit(sha: str, cwd: Path) -> bool:
+    return subprocess.run(["git", "cat-file", "-e", f"{sha}^{{commit}}"], cwd=cwd,
+                          capture_output=True).returncode == 0
+
+
 def setup_workspace(owner: str, repo: str, n: int, workspace: Path,
-                    remote_url: str | None = None) -> None:
+                    remote_url: str | None = None,
+                    head_sha: str | None = None) -> None:
     """Clone the repo (first time) + checkout the PR head branch into the workspace (disposable).
 
     The path must resolve to an absolute one: subprocess cwd + a relative target
     would create nested directories in the wrong place (e.g. pr-77/sessions/.../workspace).
+
+    With head_sha, the checkout is pinned to the commit the snapshot was taken
+    at. A push landing between the snapshot and this fetch — claim extraction
+    runs in between — would otherwise have the agents read a newer revision
+    than the patches, the report and the inline coordinates describe. If that
+    commit cannot be had (a force-push dropped it), the review fails, and the
+    next round snapshots the new head.
     """
     workspace = workspace.resolve()
     if not workspace.exists():
@@ -99,7 +121,18 @@ def setup_workspace(owner: str, repo: str, n: int, workspace: Path,
     # fetch vào FETCH_HEAD (không dùng refspec :branch — git từ chối fetch
     # vào branch đang checkout khi re-review); checkout -B force-reset branch
     _run_git(["fetch", "origin", f"pull/{n}/head"], workspace)
-    _run_git(["checkout", "-B", branch, "FETCH_HEAD"], workspace)
+    target = "FETCH_HEAD"
+    if head_sha:
+        if not _has_commit(head_sha, workspace):
+            subprocess.run(["git", "fetch", "origin", head_sha], cwd=workspace,
+                           capture_output=True)
+        if not _has_commit(head_sha, workspace):
+            raise StaleSnapshotError(
+                f"the snapshot's head {head_sha[:7]} is no longer fetchable — the "
+                f"PR was force-pushed since the snapshot; the next round reviews "
+                f"the new head")
+        target = head_sha
+    _run_git(["checkout", "-B", branch, target], workspace)
 
 
 def is_inferred(claims: list[dict]) -> bool:
@@ -120,6 +153,16 @@ def _write_instruction(out_name: str, schema: str) -> str:
     return (f"\nFinally: WRITE the file {out_name} into the current workspace "
             f"directory (where you are working) with the exact schema (no "
             f"markdown fence, plain JSON):\n{schema}\n")
+
+
+def _out(work_dir: str, name: str) -> str:
+    """Where agent `name` writes its part file.
+
+    Inside this review's own directory, never at the checkout root: that is
+    the PR's tree, and a PR shipping a file of the same name would have it
+    deleted and overwritten — or, with a directory there, the review aborted.
+    """
+    return f"{work_dir}/findings-{name}.json" if work_dir else f"findings-{name}.json"
 
 
 def build_claims_prompt(snapshot: dict, claims: list[dict], out_name: str,
@@ -189,22 +232,54 @@ What the change is understood to do:
 {SCOPE_CREEP_BLOCK if is_inferred(claims) else ""}
 Requirements:
 1. Impact: which requirement/business logic does this change affect?
-   CHANGED / BROKEN / UNAFFECTED / RISK, with a brief detail.
+   CHANGED / BROKEN / UNAFFECTED / RISK, with a brief detail. RISK means a
+   concrete way this change could break the requirement. Something you simply
+   could not verify is NOT a risk — put it in unresolved_questions instead.
 2. Threads: do unresolved comments still hold against the current code?
 3. Don't guess. Anything unverifiable → add it to unresolved_questions
    (each question ≤20 words, in English).
 {SECURITY_BLOCK}{_write_instruction(out_name, IMPACT_SCHEMA)}"""
 
 
+def _code_tasks(snapshot: dict, work_dir: str = "") -> list[dict]:
+    """One code agent per shard of changed files, each with its diff as input.
+
+    The diff goes into the workspace as a file rather than into the prompt: a
+    large PR's patch would crowd out the instructions, and the agent can page
+    through a file with the same Read tool it uses on the code. run_verify
+    passes a freshly created directory for it (see there).
+    """
+    shards = code_review.shard_files(snapshot.get("files") or [])
+    tasks = []
+    for idx, files in enumerate(shards, start=1):
+        name = f"code-{idx}" if len(shards) > 1 else "code"
+        out = _out(work_dir, name)
+        diff = f"{work_dir}/review-diff-{name}.patch" if work_dir \
+            else f"review-diff-{name}.patch"
+        tasks.append({
+            "name": name, "axis": "code", "out": out, "work_dir": work_dir,
+            "keys": ("code", "unresolved_questions"),
+            "inputs": {diff: code_review.render_diff(files)},
+            "patchless": [f["filename"] for f in files
+                          if code_review.is_patchless(f)],
+            "prompt": code_review.build_code_prompt(
+                _pr_context(snapshot), diff, SECURITY_BLOCK,
+                _write_instruction(out, code_review.CODE_SCHEMA),
+                shard=(idx, len(shards)) if len(shards) > 1 else None),
+        })
+    return tasks
+
+
 def plan_tasks(snapshot: dict, claims: list[dict],
-               doc_candidates: list[dict]) -> list[dict]:
+               doc_candidates: list[dict], code: bool = True,
+               work_dir: str = "") -> list[dict]:
     """The agents this review needs, each with its own prompt and output file."""
     tasks = []
     shards = [claims[i:i + CLAIMS_SHARD_SIZE]
               for i in range(0, len(claims), CLAIMS_SHARD_SIZE)]
     for idx, shard in enumerate(shards, start=1):
         name = f"claims-{idx}" if len(shards) > 1 else "claims"
-        out = f"findings-{name}.json"
+        out = _out(work_dir, name)
         tasks.append({
             "name": name, "axis": "claims", "out": out,
             "keys": ("claims", "unresolved_questions"),
@@ -212,16 +287,19 @@ def plan_tasks(snapshot: dict, claims: list[dict],
                 snapshot, shard, out,
                 shard=(idx, len(shards)) if len(shards) > 1 else None),
         })
+    docs_out, impact_out = _out(work_dir, "docs"), _out(work_dir, "impact")
     tasks.append({
-        "name": "docs", "axis": "docs", "out": "findings-docs.json",
+        "name": "docs", "axis": "docs", "out": docs_out,
         "keys": ("docs", "unresolved_questions"),
-        "prompt": build_docs_prompt(snapshot, doc_candidates, "findings-docs.json"),
+        "prompt": build_docs_prompt(snapshot, doc_candidates, docs_out),
     })
     tasks.append({
-        "name": "impact", "axis": "impact", "out": "findings-impact.json",
+        "name": "impact", "axis": "impact", "out": impact_out,
         "keys": ("impact", "threads", "unresolved_questions"),
-        "prompt": build_impact_prompt(snapshot, claims, "findings-impact.json"),
+        "prompt": build_impact_prompt(snapshot, claims, impact_out),
     })
+    if code:
+        tasks += _code_tasks(snapshot, work_dir)
     return tasks
 
 
@@ -361,18 +439,79 @@ def _execute(cfg: dict, workspace: Path, session_dir: Path, task: dict,
         return task, None, str(e)
 
 
+def _write_input(path: Path, content: str) -> None:
+    """Write a file into the PR's checkout without following what the PR put there.
+
+    The workspace is the PR's own tree, so a PR can commit a symlink at the
+    very name written here — review-diff-code.patch -> ~/.ssh/authorized_keys
+    — and a plain write_text would follow it out of the workspace. Whatever is
+    there is removed first (unlink drops a link, never its target), and the
+    file is created exclusively without following a link.
+    """
+    import os
+
+    if path.is_symlink() or path.is_file():
+        path.unlink()
+    elif path.exists():
+        raise RuntimeError(f"cannot write review input {path.name}: "
+                           f"the PR has a directory at that path")
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL
+                 | getattr(os, "O_NOFOLLOW", 0), 0o644)
+    # Explicit: the locale's default may not be UTF-8, and a diff carrying an
+    # accented letter or an em dash would then fail the whole review here.
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(content)
+
+
+WORK_DIR_RECORD = "work-dir.txt"
+
+
+def _fresh_work_dir(workspace: Path, session_dir: Path) -> str:
+    """A new directory for this review's files, one the PR cannot name.
+
+    Every path this tool writes into the checkout — the code agents' diffs and
+    every agent's part file — goes in here. Any fixed name can be pre-empted
+    by the PR being reviewed: a file there is deleted and overwritten, a
+    symlink redirects the write out of the workspace, a directory aborts the
+    review. mkdtemp's random name cannot be.
+
+    The previous round's directory is removed by the name recorded for it in
+    the session, never by pattern: a directory the PR itself commits under the
+    same prefix is the PR's code — to be reviewed, not deleted.
+    """
+    import shutil
+    import tempfile
+
+    record = session_dir / WORK_DIR_RECORD
+    try:
+        old = workspace / record.read_text().strip()
+    except OSError:
+        old = None
+    if (old is not None and old.parent == workspace
+            and old.name.startswith(".harness-review-")
+            and old.is_dir() and not old.is_symlink()):
+        shutil.rmtree(old, ignore_errors=True)
+    name = Path(tempfile.mkdtemp(prefix=".harness-review-", dir=workspace)).name
+    record.write_text(name)
+    return name
+
+
 def run_verify(cfg: dict, workspace: Path, session_dir: Path, snapshot: dict,
                claims: list[dict], runner=None) -> dict:
     """Fan out one agent per axis, merge the parts, validate and return findings."""
     runner = runner or select_runner(cfg)
     session_dir.mkdir(parents=True, exist_ok=True)
     doc_candidates = rank_docs(workspace, snapshot, claims)
-    tasks = plan_tasks(snapshot, claims, doc_candidates)
+    tasks = plan_tasks(snapshot, claims, doc_candidates,
+                       code=cfg.get("code_review", True),
+                       work_dir=_fresh_work_dir(workspace, session_dir))
 
-    # A part file left by the previous round would be read as this round's
-    # result if its agent fails — re-review must start from nothing.
+    # The work directory is new, so no part file from the previous round can be
+    # read as this round's; the unlink stays for a runner that reuses paths.
     for task in tasks:
         (workspace / task["out"]).unlink(missing_ok=True)
+        for name, content in task.get("inputs", {}).items():
+            _write_input(workspace / name, content)
 
     print(f"      {len(tasks)} agents on {backend_label(cfg)}: "
           f"{', '.join(t['name'] for t in tasks)}"
@@ -399,8 +538,100 @@ def run_verify(cfg: dict, workspace: Path, session_dir: Path, snapshot: dict,
         findings["unresolved_questions"].append(
             f"Review gap: the {task['name']} agent failed ({error}) — check this axis by hand.")
 
+    if any(t["axis"] == "code" for t in tasks):
+        _finish_code_axis(cfg, workspace, session_dir, snapshot, results,
+                          runner, findings)
+
     _validate_findings(findings)
     return findings
+
+
+# BLOCKER/MAJOR issues per verify agent. One verifier for every shard's issues
+# has no ceiling: on a large PR it runs out of budget partway down the list,
+# and every issue it never reached stays unconfirmed — never posted inline.
+CODE_VERIFY_BATCH = 10
+
+
+def _code_verify_tasks(snapshot: dict, issues: list[dict],
+                       diff_files: list[str], work_dir: str = "") -> list[dict]:
+    """Verify agents, one per batch. Each gets the diff, not just the head:
+    whether the change caused a defect cannot be told from the head alone."""
+    batches = [issues[i:i + CODE_VERIFY_BATCH]
+               for i in range(0, len(issues), CODE_VERIFY_BATCH)]
+    tasks = []
+    for idx, batch in enumerate(batches, start=1):
+        name = f"code-verify-{idx}" if len(batches) > 1 else "code-verify"
+        out = _out(work_dir, name)
+        tasks.append({
+            "name": name, "axis": "code-verify", "out": out,
+            "keys": ("verdicts",), "issues": batch,
+            "prompt": code_review.build_verify_prompt(
+                _pr_context(snapshot), batch, diff_files, SECURITY_BLOCK,
+                _write_instruction(out, code_review.VERDICTS_SCHEMA)),
+        })
+    return tasks
+
+
+def _finish_code_axis(cfg: dict, workspace: Path, session_dir: Path,
+                      snapshot: dict, results: list, runner,
+                      findings: dict) -> None:
+    """Number the code issues, have a second agent check the serious ones.
+
+    Runs after the fan-out rather than inside it: the verify agent needs the
+    code agents' output. It only runs when there is a BLOCKER or MAJOR to
+    check, so a clean PR pays nothing extra.
+
+    code_meta records what actually ran, because "no issues" and "the code
+    agents all died" must never render the same.
+    """
+    code_tasks = [task for task, _, _ in results if task["axis"] == "code"]
+    code_parts = [part for task, part, _ in results if task["axis"] == "code"]
+    issues = code_review.normalize_issues(
+        [i for part in code_parts if part for i in part["code"]])
+    meta = {"shards": len(code_parts),
+            "failed_shards": sum(1 for part in code_parts if part is None),
+            "verify": "skipped",
+            "patchless_files": sorted(name for task in code_tasks
+                                      for name in task.get("patchless", []))}
+    verdicts = None
+    to_check = code_review.needs_verification(issues)
+    if to_check:
+        diff_files = [name for task in code_tasks for name in task.get("inputs", {})]
+        tasks = _code_verify_tasks(snapshot, to_check, diff_files,
+                                   code_tasks[0].get("work_dir", ""))
+        for task in tasks:
+            (workspace / task["out"]).unlink(missing_ok=True)
+        with ThreadPoolExecutor(max_workers=len(tasks)) as pool:
+            done = list(pool.map(
+                lambda t: _execute(cfg, workspace, session_dir, t, runner), tasks))
+        verdicts, failed = [], 0
+        for task, part, error in done:
+            if part is None:
+                failed += 1
+                n = len(task["issues"])
+                findings["unresolved_questions"].append(
+                    f"Review gap: the {task['name']} agent failed ({error}) — "
+                    f"{n} blocker/major code issue{'' if n == 1 else 's'} unconfirmed.")
+            else:
+                # A verifier speaks only for the issues it was given: a verdict
+                # on another batch's id would override that batch's answer.
+                mine = {i["id"] for i in task["issues"]}
+                # String ids only: a list or dict id is unhashable and would
+                # crash the membership test, and with it the whole review.
+                verdicts.extend(v for v in part["verdicts"]
+                                if isinstance(v, dict)
+                                and isinstance(v.get("id"), str)
+                                and v["id"] in mine)
+        meta["verify"] = ("failed" if failed == len(tasks)
+                          else "partial" if failed else "ok")
+    kept, rejected = code_review.apply_verdicts(issues, verdicts)
+    if meta["verify"] in ("ok", "partial"):
+        confirmed = sum(1 for i in kept if i.get("verified") is True)
+        print(f"      code-verify: {confirmed} confirmed, "
+              f"{len(rejected)} rejected", flush=True)
+    findings["code"] = kept
+    findings["code_rejected"] = rejected
+    findings["code_meta"] = meta
 
 
 def _validate_findings(data: dict) -> None:
@@ -415,6 +646,14 @@ def _validate_findings(data: dict) -> None:
     for d in data["docs"]:
         if d.get("status") not in ("MATCH", "STALE", "WRONG", "FABRICATED"):
             raise RuntimeError(f"invalid findings: doc has invalid schema: {d}")
+    # Optional: a session from before the code axis, or with it off, has no
+    # "code" key — and reads as "not reviewed", never as "no issues".
+    if "code" in data:
+        if not isinstance(data["code"], list):
+            raise RuntimeError("invalid findings: code must be a list")
+        for i in data["code"]:
+            if i.get("severity") not in code_review.SEVERITIES:
+                raise RuntimeError(f"invalid findings: code issue has invalid schema: {i}")
 
 
 def parse_findings(path: Path) -> dict:

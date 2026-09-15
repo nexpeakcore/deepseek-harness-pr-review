@@ -132,6 +132,28 @@ def _write_failed_report(session_dir: Path, error: Exception) -> None:
     (session_dir / "report.md").write_text("\n".join(lines))
 
 
+def _post_inline_review(owner: str, repo: str, num: int, snapshot: dict,
+                        findings: dict) -> None:
+    """Post confirmed blocker/major code issues on their lines. Never fails the review.
+
+    The report comment already carries every issue; inline comments are the
+    delivery on top. GitHub rejecting one — a line that moved, a permission —
+    must not cost the review that produced it.
+    """
+    from src.code_review import post_inline_review
+
+    try:
+        result = post_inline_review(owner, repo, num, snapshot, findings)
+    except (RuntimeError, OSError) as e:
+        print(f"warning: could not post inline code comments: {e}", file=sys.stderr)
+        return
+    skipped = ", ".join(f"{n} {why.replace('_', ' ')}"
+                        for why, n in result["skipped"].items() if n)
+    if result["posted"] or skipped:
+        print(f"Inline code comments: {result['posted']} posted"
+              + (f" (skipped: {skipped})" if skipped else "") + ".")
+
+
 def _post_round_ping(owner: str, repo: str, num: int, snapshot: dict,
                      findings: dict, session_dir: Path,
                      claims: list[dict] | None = None) -> None:
@@ -386,7 +408,19 @@ def main(argv: list[str] | None = None) -> int:
             if findings is None:
                 workspace = session_dir / "workspace"
                 _phase(3, "workspace", "cloning + checking out the PR head")
-                setup_workspace(owner, repo, int(num), workspace)
+                from src.verify import StaleSnapshotError
+
+                try:
+                    setup_workspace(owner, repo, int(num), workspace,
+                                    head_sha=snapshot.get("head_sha"))
+                except StaleSnapshotError:
+                    # The snapshot names a commit a force-push removed. Drop it
+                    # and the claims read from it, so the next run — the same
+                    # command again, or the poller's — starts from the PR as it
+                    # is now instead of from the missing commit.
+                    for name in ("snapshot.json", "claims.json"):
+                        (session_dir / name).unlink(missing_ok=True)
+                    raise
                 _phase(4, "verify", "starting agents")
                 findings = run_verify(cfg.phase_cfg(), workspace, session_dir,
                                       snapshot, claims)
@@ -416,6 +450,7 @@ def main(argv: list[str] | None = None) -> int:
             print("Posted comment to PR.")
         else:
             print("Comment exists — updated with full report.")
+        _post_inline_review(owner, repo, int(num), snapshot, findings)
         if not args.no_ping:
             _post_round_ping(owner, repo, int(num), snapshot, findings,
                              session_dir, claims)

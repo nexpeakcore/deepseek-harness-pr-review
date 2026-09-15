@@ -4,8 +4,9 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
+from src import code_review
 from src.claims import all_inferred
-from src.synthesize import _overall_verdict, verdict_label
+from src.synthesize import _overall_verdict, summary_counts, verdict_label
 
 VERDICTS = ("ACCURATE", "PARTIAL", "CONTRADICTED", "NO_CLAIMS",
             "NO_DESCRIPTION", "INCONSISTENT")
@@ -97,8 +98,9 @@ def pr_record(session_root: Path, owner: str, repo: str, n: int) -> dict | None:
     # claims.json carries the provenance (stated vs inferred) that decides
     # which verdict scale applies; findings.json only carries statuses.
     claims_json = _read_json_list(session_dir / "claims.json")
-    docs = findings.get("docs", [])
-    impact = findings.get("impact", [])
+    # The same counts the PR comment shows — computed in one place so the
+    # dashboard and the comment can never disagree about a number.
+    counts = summary_counts(findings)
 
     return {
         "pr": n,
@@ -113,26 +115,15 @@ def pr_record(session_root: Path, owner: str, repo: str, n: int) -> dict | None:
             _overall_verdict(findings, claims_json), findings, claims_json),
         "inferred": all_inferred(claims_json),
         "claims_total": len(claims),
-        "bugs": sum(1 for c in claims
-                    if c.get("status") in ("FAIL", "PARTIAL"))
-                + sum(1 for i in impact
-                      if i.get("impact") in ("BROKEN", "RISK")),
-        "bug_breakdown": {
-            "claims_fail": sum(1 for c in claims if c.get("status") == "FAIL"),
-            "claims_partial": sum(1 for c in claims
-                                  if c.get("status") == "PARTIAL"),
-            "impact_broken": sum(1 for i in impact
-                                 if i.get("impact") == "BROKEN"),
-            "impact_risk": sum(1 for i in impact if i.get("impact") == "RISK"),
-        },
-        "doc_errors": sum(1 for d in docs
-                          if d.get("status") in ("WRONG", "FABRICATED", "STALE")),
-        "doc_breakdown": {
-            "wrong": sum(1 for d in docs if d.get("status") == "WRONG"),
-            "fabricated": sum(1 for d in docs
-                              if d.get("status") == "FABRICATED"),
-            "stale": sum(1 for d in docs if d.get("status") == "STALE"),
-        },
+        "bugs": counts["bugs"],
+        "bug_breakdown": counts["bug_breakdown"],
+        "attention": counts["attention"],
+        "attention_breakdown": counts["attention_breakdown"],
+        "doc_errors": counts["doc_errors"],
+        "doc_breakdown": counts["doc_breakdown"],
+        "code_verdict": code_review.code_verdict(findings),
+        "code_label": code_review.code_verdict_label(findings),
+        "code_counts": counts["code"],
         "open_questions": sum(1 for a in answers
                               if a.get("answer") in ("SKIPPED", "")),
         "rounds": _read_rounds(session_dir),
@@ -163,6 +154,7 @@ def repo_record(session_root: Path, owner: str, repo: str) -> dict | None:
         "repo": repo,
         "prs_total": len(prs),
         "bugs_total": sum(r["bugs"] for r in prs),
+        "attention_total": sum(r["attention"] for r in prs),
         "doc_errors_total": sum(r["doc_errors"] for r in prs),
         "verdict_count": verdict_count,
         "prs": prs,
@@ -199,6 +191,10 @@ def pr_detail(session_root: Path, owner: str, repo: str, n: int) -> dict | None:
         "pr": rec,
         "title": snapshot.get("title", ""),
         "body": snapshot.get("body", ""),
+        "head_sha": snapshot.get("head_sha", ""),
+        "code_reviewed": code_review.reviewed(findings),
+        "code": code_review.by_severity(findings.get("code") or []),
+        "code_rejected": findings.get("code_rejected") or [],
         "claims": claims,
         "docs": findings.get("docs", []),
         "impact": findings.get("impact", []),

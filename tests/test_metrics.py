@@ -85,14 +85,16 @@ def test_pr_record_corrupt_json_skipped(tmp_path):
 
 def test_repo_record_aggregates(tmp_path):
     findings = {
-        "claims": [{"id": "C1", "status": "FAIL", "evidence": [], "note": ""}],
+        "claims": [{"id": "C1", "status": "FAIL", "evidence": [], "note": ""},
+                   {"id": "C2", "status": "PARTIAL", "evidence": [], "note": ""}],
         "docs": [], "impact": [], "threads": [], "unresolved_questions": [],
     }
     _write_session(tmp_path, "o", "r", 7, snapshot=SNAPSHOT, findings=EMPTY_FINDINGS)
     _write_session(tmp_path, "o", "r", 8, snapshot=SNAPSHOT, findings=findings)
     rec = metrics.repo_record(tmp_path, "o", "r")
     assert rec["prs_total"] == 2
-    assert rec["bugs_total"] == 1
+    assert rec["bugs_total"] == 1          # the FAIL
+    assert rec["attention_total"] == 1     # the PARTIAL — the NEEDS A LOOK card
     assert rec["doc_errors_total"] == 0
     assert rec["verdict_count"] == {"ACCURATE": 0, "PARTIAL": 0,
                                     "CONTRADICTED": 1, "NO_CLAIMS": 1,
@@ -138,8 +140,34 @@ def test_pr_record_wider_metrics(tmp_path):
     }
     _write_session(tmp_path, "o", "r", 7, snapshot=SNAPSHOT, findings=findings)
     rec = metrics.pr_record(tmp_path, "o", "r", 7)
-    assert rec["bugs"] == 4          # FAIL + PARTIAL + BROKEN + RISK
+    # Wrong vs worth a look: PARTIAL and RISK are not established as wrong,
+    # so they no longer inflate the bug count.
+    assert rec["bugs"] == 2          # FAIL + BROKEN
+    assert rec["attention"] == 2     # PARTIAL + RISK
     assert rec["doc_errors"] == 3    # WRONG + FABRICATED + STALE
+    assert rec["code_verdict"] == "NOT_RUN"   # no code axis in this session
+
+
+def test_pr_record_counts_code_issues_as_bugs(tmp_path):
+    findings = {**EMPTY_FINDINGS,
+                "code": [{"id": "K1", "severity": "BLOCKER", "category": "security",
+                          "file": "a.py", "line": 1, "title": "t", "verified": True},
+                         {"id": "K2", "severity": "MAJOR", "category": "correctness",
+                          "file": "a.py", "line": 2, "title": "t", "verified": None},
+                         {"id": "K3", "severity": "MINOR", "category": "correctness",
+                          "file": "a.py", "line": 3, "title": "t", "verified": None}],
+                "code_meta": {"shards": 1, "failed_shards": 0, "verify": "ok"}}
+    _write_session(tmp_path, "o", "r", 7, snapshot=SNAPSHOT, findings=findings)
+    rec = metrics.pr_record(tmp_path, "o", "r", 7)
+    assert rec["bugs"] == 2                       # BLOCKER + MAJOR, not MINOR
+    assert rec["bug_breakdown"]["code_blocker"] == 1
+    assert rec["code_verdict"] == "BLOCKER"
+    assert rec["code_label"] == "Code: 1 blocker · 1 major · 1 minor (1 unconfirmed)"
+    assert rec["code_counts"]["by_category"] == {"security": 1, "correctness": 2}
+    detail = metrics.pr_detail(tmp_path, "o", "r", 7)
+    assert detail["code_reviewed"] is True
+    assert [i["id"] for i in detail["code"]] == ["K1", "K2", "K3"]
+    assert metrics.repo_record(tmp_path, "o", "r")["bugs_total"] == 2
 
 
 def test_pr_record_rounds(tmp_path):

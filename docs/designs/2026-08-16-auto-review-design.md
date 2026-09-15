@@ -87,8 +87,13 @@ things address that:
    opens the PR.
 2. A **round ping** — a short NEW comment per round (`post_ping`, marker
    `<!-- harness-pr-review-ping -->`). Being new is the whole point: that is
-   what GitHub notifies on. It carries verdict, risk count, doc-error count and
-   the claim breakdown, plus a link up to the report comment.
+   what GitHub notifies on. It carries both verdicts (description and code),
+   the bug, needs-a-look and doc-error counts and the claim breakdown, plus a
+   link up to the report comment.
+3. **Inline code comments** — confirmed BLOCKER/MAJOR code issues, posted as
+   one COMMENT review on their lines (see
+   [the code review axis](2026-09-15-code-review-axis-design.md)). Each carries
+   a hidden key, so a re-review never posts the same issue twice.
 
 `PING_MARKER` is deliberately not a superstring of `MARKER`. `post_comment`
 PATCHes the first comment containing `MARKER`, so a ping carrying it would be

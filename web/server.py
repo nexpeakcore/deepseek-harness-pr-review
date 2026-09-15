@@ -152,6 +152,7 @@ def repo_list(request: Request):
                     repos.append({
                         "owner": owner, "repo": repo,
                         "prs_total": 0, "bugs_total": 0,
+                        "attention_total": 0,
                         "doc_errors_total": 0, "has_data": False,
                         "mode": "auto",
                     })
@@ -206,7 +207,7 @@ def repo_page(request: Request, owner: str, repo: str):
             raise HTTPException(status_code=404,
                                 detail="Repo not found")
         rec = {"owner": owner, "repo": repo, "prs_total": 0, "bugs_total": 0,
-               "doc_errors_total": 0,
+               "attention_total": 0, "doc_errors_total": 0,
                "verdict_count": {v: 0 for v in metrics.VERDICTS},
                "prs": [], "has_data": False}
     else:

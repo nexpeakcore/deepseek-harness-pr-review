@@ -144,8 +144,10 @@ def test_post_comment_default_lists_paginated_and_posts_dash_f():
 
 def test_build_comment_summary_badges():
     comment = build_comment(SNAPSHOT, CLAIMS, FINDINGS, ANSWERS)
-    assert "Risks found:" in comment
+    assert "Bugs:" in comment
+    assert "Needs a look:" in comment
     assert "Doc errors:" in comment
+    assert "Code: not reviewed" in comment    # FINDINGS predates the code axis
     assert "background-color" in comment
 
 
@@ -234,8 +236,10 @@ def test_ping_carries_the_headline_numbers():
     assert "round 3" in ping
     assert "`1930e24`" in ping            # commit đã review
     assert "2026-08-18 11:02 UTC" in ping
-    assert "**2** risks" in ping          # 1 PARTIAL + 1 RISK impact
+    assert "**0** bugs" in ping           # nothing established as wrong
+    assert "**2** to look at" in ping     # 1 PARTIAL + 1 RISK impact
     assert "**2** doc errors" in ping     # STALE + WRONG, MATCH không tính
+    assert "Code: not reviewed" in ping
     assert "15 claims" in ping
     assert "12 matches" in ping and "1 partial" in ping and "2 unverified" in ping
 
@@ -245,19 +249,95 @@ def test_ping_numbers_match_the_full_comment():
     counts = summary_counts(PING_FINDINGS)
     body = build_comment(_snap(), [], PING_FINDINGS, [], completed_at="t")
     ping = build_ping(_snap(), PING_FINDINGS, completed_at="t")
-    assert f"Risks found: {counts['risks']}" in body
-    assert f"**{counts['risks']}** risk" in ping
+    assert f"Bugs: {counts['bugs']}" in body
+    assert f"**{counts['bugs']}** bug" in ping
+    assert f"Needs a look: {counts['attention']}" in body
+    assert f"**{counts['attention']}** to look at" in ping
     assert f"Doc errors: {counts['doc_errors']}" in body
     assert f"**{counts['doc_errors']}** doc error" in ping
 
 
 def test_ping_singular_plural():
-    one = {"claims": [{"status": "PARTIAL"}], "docs": [{"status": "STALE"}],
+    one = {"claims": [{"status": "FAIL"}], "docs": [{"status": "STALE"}],
            "impact": [], "threads": [], "unresolved_questions": []}
     ping = build_ping(_snap(), one, completed_at="t")
-    assert "**1** risk ·" in ping and "**1** risks" not in ping
+    assert "**1** bug ·" in ping and "**1** bugs" not in ping
     assert "**1** doc error ·" in ping
     assert "1 claim (" in ping
+
+
+# --- code axis --------------------------------------------------------------
+
+CODE_FINDINGS = {
+    **EMPTY,
+    "code": [
+        {"id": "K1", "file": "a.py", "line": 3, "severity": "MINOR",
+         "category": "resource", "title": "file handle leaks",
+         "scenario": "each call leaks one handle", "evidence": [], "verified": None},
+        {"id": "K2", "file": "b.py", "line": 9, "severity": "BLOCKER",
+         "category": "security", "title": "shell injection",
+         "scenario": "name=\"'; rm -rf ~\"", "evidence": [], "verified": True},
+    ],
+    "code_rejected": [{"id": "K3", "file": "c.py", "line": 1, "severity": "MAJOR",
+                       "category": "correctness", "title": "x", "reason": "guarded"}],
+    "code_meta": {"shards": 1, "failed_shards": 0, "verify": "ok"},
+}
+
+
+def test_report_lists_code_issues_worst_first(tmp_path):
+    report = build_report(_snap(), [], CODE_FINDINGS, [], tmp_path)
+    assert "## Code review — Code: 1 blocker · 1 minor" in report
+    assert report.index("shell injection") < report.index("file handle leaks")
+    assert "| confirmed |" in report
+    assert "1 more reported issue rejected" in report
+    assert report.index("## Code review") < report.index("## Claims")
+
+
+def test_report_says_when_the_code_axis_did_not_run(tmp_path):
+    report = build_report(_snap(), [], EMPTY, [], tmp_path)
+    assert "Code: not reviewed" in report
+    assert "did not run" in report
+
+
+def _code_section_tag(body: str) -> str:
+    idx = body.index("Code review")
+    return body[body.rfind("<details", 0, idx):idx]
+
+
+def test_comment_opens_the_code_section_when_something_blocks():
+    body = build_comment(_snap(), [], CODE_FINDINGS, [], completed_at="t")
+    assert "Code: 1 blocker · 1 minor" in body
+    assert "Bugs: 1" in body                       # the blocker; MINOR is not a bug
+    assert _code_section_tag(body).startswith("<details open")
+    assert "shell injection" in body
+
+
+def test_comment_keeps_a_clean_code_section_closed():
+    clean = {**EMPTY, "code": [], "code_meta": {"shards": 1, "failed_shards": 0}}
+    body = build_comment(_snap(), [], clean, [], completed_at="t")
+    assert "Code: no issues found" in body
+    assert not _code_section_tag(body).startswith("<details open")
+    assert "No defects found" in body
+
+
+def test_ping_names_the_code_verdict():
+    ping = build_ping(_snap(), CODE_FINDINGS, completed_at="t")
+    assert "Code: 1 blocker · 1 minor" in ping
+    assert "**1** bug ·" in ping
+
+
+def test_comment_names_the_files_that_were_not_reviewed():
+    """Codex review on #27: 'No defects found' stood alone although a file
+    GitHub would not diff was never seen."""
+    clean = {**EMPTY, "code": [],
+             "code_meta": {"shards": 1, "failed_shards": 0,
+                           "patchless_files": ["big/generated.py"]}}
+    body = build_comment(_snap(), [], clean, [], completed_at="t")
+    assert "Code: no issues found (partial)" in body
+    assert "Not reviewed — GitHub sent no diff (too large): big/generated.py" in body
+    # Clean but partial is not green (this PR's eighth review).
+    assert ('color:#b9770e;padding:2px 10px;border-radius:10px;font-size:12px;'
+            'font-weight:600">● Code: no issues found (partial)') in body
 
 
 def test_ping_posts_a_new_comment_every_round():

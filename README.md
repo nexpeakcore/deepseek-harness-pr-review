@@ -13,6 +13,9 @@ and flags requirement impact — with human-in-the-loop only when it matters.
 PR descriptions lie. Docs go stale. Manual code review is slow and
 inconsistent. This tool runs a DeepSeek Harness agent that:
 
+- **Reviews the code itself** — the changed code is read for defects, each
+  with a concrete failure scenario; a second agent confirms or rejects every
+  blocker and major, and confirmed ones land as inline comments on their lines
 - **Verifies PR descriptions claim-by-claim** — each sentence of the
   description is checked against the actual code, with `file:line` evidence
 - **Reviews PRs that have no description at all** — the ones that need it most.
@@ -43,16 +46,17 @@ and live demo data are included — see [Web dashboard](#web-dashboard).
 
 | | |
 |---|---|
+| ✅ **Code review** | The changed code itself is reviewed for defects — correctness, error handling, security, concurrency, resources, performance, missing tests. Every issue must name a concrete failure scenario, a second agent confirms or rejects each BLOCKER/MAJOR, and confirmed ones are posted as inline comments on their lines |
 | ✅ **Claim verification** | PR description split into verifiable claims, each checked against code with evidence |
 | ✅ **No-description fallback** | PR with an empty or boilerplate body: claims are reconstructed from commits, branch, labels, linked issue and the diff, then checked for internal consistency — and the reconstruction is posted back as the description the author should have written |
 | ✅ **Docs reality-check** | Docs compared to real code: `MATCH / STALE / WRONG / FABRICATED` |
 | ✅ **Requirement impact** | `CHANGED / BROKEN / RISK` analysis per business requirement |
 | ✅ **Human-in-the-loop** | ≤20-word confirmation questions only when uncertain — no guessing |
-| ✅ **Parallel agents** | One agent per review axis (claims / docs / impact), claims sharded past 15 — so a 40-claim PR cannot starve the docs check. Concurrency is capped globally across every review process |
+| ✅ **Parallel agents** | One agent per review axis (code / claims / docs / impact), claims sharded past 15 and code past 20 files — so a 40-claim PR cannot starve the docs check. Concurrency is capped globally across every review process |
 | ✅ **Ranked doc targets** | Docs are scored against the diff (path proximity, changed symbols, file mentions) before any agent runs — the agent verifies a bounded, reproducible list instead of grepping the repo |
 | ✅ **Repo config that stays true** | Adding a repo verifies it exists and is visible to your token first, so a typo cannot become a permanent config entry. `autoreview --check-repos` (and the /config page) flags entries GitHub can no longer reach and removes them in one click |
 | ✅ **Auto review poller** | Reviews new PRs automatically, and re-reviews when the *diff* changes — not merely when the head SHA does. A rebase, a merge of the base branch, an amended message or an empty commit moves the head without changing a line, and each one used to cost a full agent fan-out and a fresh notification saying exactly what the last round said |
-| ✅ **Web dashboard** | Repo config management, review triggers (Review now), live review logs, metrics: risks found, doc errors, verdicts, review rounds per repo |
+| ✅ **Web dashboard** | Repo config management, review triggers (Review now), live review logs, metrics: bugs found, needs a look, doc errors, verdicts, review rounds per repo |
 | ✅ **Idempotent PR comments** | One English comment per PR, updated in place — never duplicated |
 | ✅ **Traceable** | Every phase writes structured JSON to `sessions/` |
 
@@ -216,7 +220,7 @@ Results land in `sessions/<owner>/<repo>/pr-<n>/report.md` (change the directory
      never fills up with stale reports. It opens with a `Review complete` line
      carrying the timestamp, round number and reviewed commit.
    - **A round ping** — a short new comment per round with the headline numbers
-     (verdict, risks, doc errors, claim breakdown) and a link up to the report.
+     (both verdicts, bugs, needs a look, doc errors, claims) and a link up to the report.
      GitHub raises no notification for an edit, so this is the only part that
      actually reaches subscribers. Disable with `--no-ping`, or
      `ping_comment: false` in `autoreview.yml`.
@@ -229,8 +233,8 @@ python -m pytest -v
 
 ## Web dashboard
 
-Web dashboard for review metrics (PRs reviewed, risks found, doc errors, verdicts
-per repo). Reads `sessions/` directly — no database.
+Web dashboard for review metrics (PRs reviewed, bugs found, needs a look, doc
+errors, verdicts per repo). Reads `sessions/` directly — no database.
 
 ```bash
 pip install -e '.[web]'
@@ -239,11 +243,15 @@ harness-pr-review web   # open http://127.0.0.1:6789
 ```
 
 Pages: repo list → repo detail (KPIs + verdict donut + PR table) → PR detail
-(tabs: Claims / Docs / Impact / Threads / Confirm). The PR table lists ALL open
+(tabs: Code / Claims / Docs / Impact / Threads / Confirm). The PR table lists ALL open
 PRs from GitHub with review status (Not reviewed / Reviewing / Reviewed N
 rounds / Failed · interrupted — a session that never produced findings and has
-no live lock, i.e. the review crashed). Risks counts FAIL + PARTIAL claims and
-BROKEN + RISK impacts; Doc errors counts WRONG + FABRICATED + STALE docs. Each open PR row has a
+no live lock, i.e. the review crashed). **Bugs** counts what is established as
+wrong: BLOCKER + MAJOR code issues, FAIL claims and BROKEN impacts. **Needs a
+look** counts PARTIAL claims and RISK impacts — worth a human's time, not shown
+to be wrong. Doc errors counts WRONG + FABRICATED + STALE docs. Sessions from
+before the code axis re-count on read, so a repo's bug total drops: their
+PARTIAL and RISK items move to Needs a look. Each open PR row has a
 **Review now** / **Re-review** button that runs the review synchronously using
 the repo's auto-review config (skip-human + post-comment flags from
 `autoreview.yml`).
@@ -347,6 +355,7 @@ Two consequences worth knowing:
 |---|---|---|
 | `HARNESS_PROVIDER` | `deepseek` | Agent backend: `deepseek` or `claude` (see [Agent backends](#agent-backends)) |
 | `HARNESS_CLAUDE_MODEL` | `sonnet` | Model for the `claude` backend |
+| `HARNESS_CODE_REVIEW` | `1` | Code review axis: code agents (one per ~20 changed files) plus a verify agent for BLOCKER/MAJOR, and inline comments. `0` switches it off — the review then reads **Code: not reviewed** |
 | `DEEPSEEK_API_KEY` | — | DeepSeek API key (only required by the `deepseek` backend) |
 | `DSH_MODEL` | `deepseek-v4-flash` | Model for the `deepseek` backend (agent + claim extraction) |
 | `DEEPSEEK_BASE_URL` | `https://api.deepseek.com/v1` | OpenAI-compatible endpoint |

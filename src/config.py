@@ -45,6 +45,9 @@ class Config:
     session_root: Path
     provider: str = DEFAULT_PROVIDER
     claude_model: str = "sonnet"
+    # The code axis costs one agent per ~20 changed files plus a verify agent,
+    # roughly a third on top of a review. On by default; this is the off switch.
+    code_review: bool = True
 
     @property
     def needs_deepseek_key(self) -> bool:
@@ -73,6 +76,7 @@ class Config:
             "claude_model": self.claude_model,
             "api_key": self.api_key,
             "base_url": self.base_url,
+            "code_review": self.code_review,
         }
 
 
@@ -85,4 +89,6 @@ def load_config() -> Config:
         provider=os.environ.get("HARNESS_PROVIDER", DEFAULT_PROVIDER).strip().lower()
                  or DEFAULT_PROVIDER,
         claude_model=os.environ.get("HARNESS_CLAUDE_MODEL", "sonnet").strip() or "sonnet",
+        code_review=os.environ.get("HARNESS_CODE_REVIEW", "1").strip().lower()
+                    not in ("0", "false", "no", "off"),
     )

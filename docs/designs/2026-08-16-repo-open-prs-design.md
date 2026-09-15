@@ -13,6 +13,7 @@ shows.
 ## Part 1 — Repo page table (all open PRs)
 
 Table columns: `# | Title | Draft | Review status | Risks | Doc errors`
+(the Risks column is now **Bugs** — see the superseded `risks` rule below)
 
 - Source of open PRs: `gh api repos/{o}/{r}/pulls?state=open`
   (metrics.open_prs duplicates the gh call directly — kept separate to avoid a web→autoreview import)
@@ -26,6 +27,8 @@ Table columns: `# | Title | Draft | Review status | Risks | Doc errors`
   - `Reviewed · N rounds` — findings.json exists, N from rounds.txt (fallback 1)
 - Merged/closed PRs with sessions are NOT shown in the table but still counted in KPIs
 - KPI cards stay: PRs REVIEWED / RISKS FOUND / DOC ERRORS / OPEN Qs / VERDICTS
+  (since the code review axis: PRs REVIEWED / BUGS FOUND / NEEDS A LOOK /
+  DOC ERRORS / OPEN Qs / VERDICTS)
 - Draft badge shown; gh failure → table shows reviewed PRs only + "open PRs unavailable" badge
 - Sort: open PRs by number desc (newest first)
 
@@ -40,9 +43,14 @@ Table columns: `# | Title | Draft | Review status | Risks | Doc errors`
 
 **Broader metrics (`web/metrics.py`):**
 - `risks` = claims `FAIL` + `PARTIAL` + impact `BROKEN` + `RISK` (internal key: bugs)
+  — superseded by [the code review axis](2026-09-15-code-review-axis-design.md):
+  bugs = claim `FAIL` + impact `BROKEN` + code `BLOCKER`/`MAJOR`; `PARTIAL` and
+  `RISK` moved to a separate "needs a look" count
 - `doc_errors` = docs `WRONG` + `FABRICATED` + `STALE`
 - Demo fixture (tests/test_metrics.py): claims PARTIAL/RISK/STALE combinations assert the counting rules
   → risks = 4, doc_errors = 3 (covered by test_metrics.py::test_pr_record_wider_metrics: FAIL+PARTIAL claims, BROKEN+RISK impacts, WRONG+FABRICATED+STALE docs)
+  — under the superseding rule that fixture now asserts bugs = 2 (FAIL + BROKEN)
+  and attention = 2 (PARTIAL + RISK)
 
 **Data flow:**
 - `metrics.pr_record` adds `rounds` (from rounds.txt, fallback 1)
