@@ -137,6 +137,11 @@ Not posted inline, but kept in the report:
   count — anyone can type a marker into a comment, and a planted one would
   suppress a finding — and an outdated comment's `original_line`, a coordinate
   in an older commit, never claims a line of the current diff.
+- A marker cannot arrive through the model either. Title and scenario are
+  written by an agent that read the untrusted PR, and this tool's own token
+  posts them, so they would pass the author filter: `<` in both is escaped to
+  `&lt;` (GitHub renders the same text), and only a comment's trailing marker
+  — the one this tool appends — is ever read.
 
 The diff files the code agents read live in the PR's own checkout, where the
 PR could commit a symlink — or a directory — at any name it can predict. So
