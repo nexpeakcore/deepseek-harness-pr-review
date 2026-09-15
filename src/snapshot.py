@@ -94,6 +94,9 @@ def normalize_files(raw: list[dict]) -> list[dict]:
             "additions": f.get("additions", 0),
             "deletions": f.get("deletions", 0),
             "patch": f.get("patch", ""),
+            # A pure rename carries no patch; the old path is the only record
+            # of what disappeared, and callers may still point at it.
+            "previous_filename": f.get("previous_filename", ""),
         }
         for f in raw
     ]

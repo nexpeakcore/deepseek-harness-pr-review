@@ -490,6 +490,25 @@ def test_no_post_skips_inline_comments(tmp_path, monkeypatch):
     assert calls == []
 
 
+def test_a_force_pushed_snapshot_is_dropped_so_a_rerun_starts_fresh(tmp_path,
+                                                                     monkeypatch):
+    """Found by this PR's eighth review: the stale snapshot stayed on disk, so
+    re-running the same command went back to the same missing commit forever."""
+    from src.verify import StaleSnapshotError
+
+    _stub_pipeline(monkeypatch, tmp_path)
+
+    def gone(*a, **k):
+        raise StaleSnapshotError("the snapshot's head abcdef1 is no longer fetchable")
+
+    monkeypatch.setattr("src.run.setup_workspace", gone)
+    assert main(["demo/app", "7", "--skip-human"]) == 1
+    d = tmp_path / "sessions" / "demo" / "app" / "pr-7"
+    assert not (d / "snapshot.json").exists()
+    assert not (d / "claims.json").exists()
+    assert (d / "report.md").read_text().startswith("# Review FAILED")
+
+
 def test_main_no_ping_flag_skips_the_ping(tmp_path, monkeypatch, capsys):
     _stub_pipeline(monkeypatch, tmp_path)
     calls = []

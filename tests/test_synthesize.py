@@ -335,6 +335,9 @@ def test_comment_names_the_files_that_were_not_reviewed():
     body = build_comment(_snap(), [], clean, [], completed_at="t")
     assert "Code: no issues found (partial)" in body
     assert "Not reviewed — GitHub sent no diff (too large): big/generated.py" in body
+    # Clean but partial is not green (this PR's eighth review).
+    assert ('color:#b9770e;padding:2px 10px;border-radius:10px;font-size:12px;'
+            'font-weight:600">● Code: no issues found (partial)') in body
 
 
 def test_ping_posts_a_new_comment_every_round():

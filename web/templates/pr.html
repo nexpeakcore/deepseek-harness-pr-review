@@ -39,7 +39,8 @@
      href="https://github.com/{{ repo_owner }}/{{ repo_name }}/pull/{{ detail.pr.pr }}">Open on GitHub ↗</a></h1>
 <p class="muted">{{ detail.pr.author }} · {{ detail.pr.base }} → {{ detail.pr.head }}</p>
 <span class="verdict v-{{ detail.pr.verdict|lower }}">{{ detail.pr.verdict_label }}</span>
-<span class="verdict v-{{ detail.pr.code_verdict|lower }}">{{ detail.pr.code_label }}</span>
+{# Clean but partial is not green: part of the change was never reviewed. #}
+<span class="verdict v-{{ 'partial' if detail.pr.code_verdict == 'CLEAN' and 'partial' in detail.pr.code_label else detail.pr.code_verdict|lower }}">{{ detail.pr.code_label }}</span>
 <span class="verdict v-fail">Bugs: {{ detail.pr.bugs }}</span>
 <span class="verdict v-partial">Needs a look: {{ detail.pr.attention }}</span>
 <span class="verdict v-wrong">Doc errors: {{ detail.pr.doc_errors }}</span>

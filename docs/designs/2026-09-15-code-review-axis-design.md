@@ -126,7 +126,11 @@ Not posted inline, but kept in the report:
   `<!-- harness-code:<key>:<digest>:<category> -->`. On one line, a comment
   claims only issues of its own category — a reworded title of the same
   defect is not posted twice, while a second, different defect on that line
-  (security next to correctness) still is.
+  (security next to correctness) still is. That rule is for earlier rounds'
+  comments only: within one round, only an identical issue is folded, so two
+  distinct defects of one category on one line both post. The cost is a new
+  same-category defect on a line already commented on in an earlier round —
+  it stays in the report rather than going inline.
   A new round skips an issue on a line this tool already commented on, and an
   issue whose key and line-code digest match an earlier comment: the defect
   moved, and its code moved with it. So the same pattern at two lines posts

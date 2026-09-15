@@ -462,3 +462,21 @@ def test_a_marker_smuggled_into_a_title_is_inert():
                                              title="shell injection")], FILES, raw)
     assert [c["body"].split(" — ")[1].split("\n")[0] for c in again] == ["shell injection"]
     assert skipped["already_posted"] == 1
+
+
+def test_a_rename_names_the_old_path():
+    """Codex review on #27: a pure rename came without a patch, and the agent
+    could not tell which path had disappeared."""
+    text = render_diff([{"filename": "src/new.py", "previous_filename": "src/old.py",
+                         "status": "renamed", "additions": 0, "deletions": 0,
+                         "patch": ""}])
+    assert "renamed from src/old.py" in text
+
+
+def test_two_defects_of_one_category_on_one_line_both_post_in_a_round():
+    """Codex review on #27: the category rule suppressed the second of two
+    distinct correctness failures in one expression within the same round."""
+    issues = [_confirmed(line=3, title="off by one"),
+              _confirmed(line=3, title="divides by zero on empty input")]
+    comments, skipped = plan_inline(issues, FILES, [])
+    assert len(comments) == 2 and skipped["already_posted"] == 0

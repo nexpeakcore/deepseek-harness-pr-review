@@ -85,6 +85,14 @@ def _run_git(args: list[str], cwd: Path) -> None:
         raise RuntimeError(f"git {' '.join(args)} failed: {proc.stderr.strip()}")
 
 
+class StaleSnapshotError(RuntimeError):
+    """The snapshot names a PR head that can no longer be fetched.
+
+    Its own type, so the caller can drop the stale snapshot: kept on disk, it
+    would send every later run back to the same missing commit.
+    """
+
+
 def _has_commit(sha: str, cwd: Path) -> bool:
     return subprocess.run(["git", "cat-file", "-e", f"{sha}^{{commit}}"], cwd=cwd,
                           capture_output=True).returncode == 0
@@ -119,7 +127,7 @@ def setup_workspace(owner: str, repo: str, n: int, workspace: Path,
             subprocess.run(["git", "fetch", "origin", head_sha], cwd=workspace,
                            capture_output=True)
         if not _has_commit(head_sha, workspace):
-            raise RuntimeError(
+            raise StaleSnapshotError(
                 f"the snapshot's head {head_sha[:7]} is no longer fetchable — the "
                 f"PR was force-pushed since the snapshot; the next round reviews "
                 f"the new head")

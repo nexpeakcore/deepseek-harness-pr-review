@@ -112,6 +112,10 @@ def render_diff(files: list[dict]) -> str:
     for f in files:
         header = (f"=== {f.get('filename', '')} ({f.get('status', '')} "
                   f"+{f.get('additions', 0)}/-{f.get('deletions', 0)})")
+        if f.get("previous_filename"):
+            header += (f"\n(renamed from {f['previous_filename']} — anything "
+                       f"still referring to the old path is now broken: check "
+                       f"imports, callers and hard-coded paths)")
         patch = f.get("patch") or ""
         if patch:
             body = annotate_patch(patch)
@@ -487,12 +491,16 @@ def plan_inline(issues: list[dict], files: list[dict],
     legacy_moved = {key: len(spots - set(current)) for key, spots in legacy.items()}
     # None stands for a marker from before categories: it claims the line.
     claimed = {spot: {cat for _, _, cat in marks} for spot, marks in at_spot.items()}
-    comments = []
+    # Within this round only an identical issue is folded: two issues the
+    # agents reported apart are two defects, even in one category on one line.
+    # The category rule is for earlier rounds' comments, where the same defect
+    # may come back under a reworded title.
+    comments, posted_now = [], set()
     for issue in eligible:
         key, spot = issue_key(issue), (issue["file"], issue["line"])
         anchor = line_anchor(texts[issue["file"]][issue["line"]])
         cats = claimed.get(spot, set())
-        if None in cats or issue["category"] in cats:
+        if (spot, key) in posted_now or None in cats or issue["category"] in cats:
             skipped["already_posted"] += 1
         elif anchored.get((key, anchor), 0) > 0:
             anchored[key, anchor] -= 1
@@ -501,7 +509,7 @@ def plan_inline(issues: list[dict], files: list[dict],
             legacy_moved[key] -= 1
             skipped["already_posted"] += 1
         else:
-            claimed.setdefault(spot, set()).add(issue["category"])
+            posted_now.add((spot, key))
             comments.append({"path": issue["file"], "line": issue["line"],
                              "side": "RIGHT", "body": inline_body(issue, anchor)})
     return comments, skipped

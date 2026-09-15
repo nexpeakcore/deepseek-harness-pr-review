@@ -445,7 +445,10 @@ def build_comment(snapshot: dict, claims: list[dict], findings: dict,
     counts = summary_counts(findings)
     bugs, attention = counts["bugs"], counts["attention"]
     doc_errors = counts["doc_errors"]
-    code_color = CODE_VERDICT_COLOR.get(code_verdict, "#6b7280")
+    # Clean but partial is not green: part of the change was never reviewed.
+    code_color = ("#b9770e" if code_verdict == "CLEAN"
+                  and "partial" in code_review.code_verdict_label(findings)
+                  else CODE_VERDICT_COLOR.get(code_verdict, "#6b7280"))
     summary = (
         f"{_badge(v_text, v_color)} "
         f"{_badge(code_review.code_verdict_label(findings), code_color)} "

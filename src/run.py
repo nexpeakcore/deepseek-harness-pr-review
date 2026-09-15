@@ -408,8 +408,19 @@ def main(argv: list[str] | None = None) -> int:
             if findings is None:
                 workspace = session_dir / "workspace"
                 _phase(3, "workspace", "cloning + checking out the PR head")
-                setup_workspace(owner, repo, int(num), workspace,
-                                head_sha=snapshot.get("head_sha"))
+                from src.verify import StaleSnapshotError
+
+                try:
+                    setup_workspace(owner, repo, int(num), workspace,
+                                    head_sha=snapshot.get("head_sha"))
+                except StaleSnapshotError:
+                    # The snapshot names a commit a force-push removed. Drop it
+                    # and the claims read from it, so the next run — the same
+                    # command again, or the poller's — starts from the PR as it
+                    # is now instead of from the missing commit.
+                    for name in ("snapshot.json", "claims.json"):
+                        (session_dir / name).unlink(missing_ok=True)
+                    raise
                 _phase(4, "verify", "starting agents")
                 findings = run_verify(cfg.phase_cfg(), workspace, session_dir,
                                       snapshot, claims)
