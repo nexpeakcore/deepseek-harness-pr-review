@@ -76,7 +76,7 @@ New API routes:
   data, "org lookup failed" badge *(not implemented — org lookup fails silently, configured repos still shown)*
 - Concurrent UI+CLI writes → atomic write (temp + rename); poller reads config
   once per pass
-- Add non-existent repo → HTTP 400 with clear message *(not implemented — repo existence is not validated on add)*
+- Add non-existent repo → HTTP 400 with clear message *(implemented in #14: `check_repo()` verifies the repo exists and is visible to the token before the entry is written)*
 - API errors: `{detail: "..."}` HTTP 400/404, surfaced via `alert()` in the config page JS
 
 ## Testing

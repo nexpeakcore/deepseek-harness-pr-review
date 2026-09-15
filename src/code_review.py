@@ -284,10 +284,17 @@ def apply_verdicts(issues: list[dict],
     is moved out, with the reason, so precision can be measured later rather
     than the evidence being thrown away.
     """
-    by_id = {}
+    by_id, conflicted = {}, set()
     for v in verdicts or []:
         if isinstance(v, dict) and isinstance(v.get("id"), str):
+            prev = by_id.get(v["id"])
+            if prev is not None and (str(prev.get("verdict", "")).upper()
+                                     != str(v.get("verdict", "")).upper()):
+                conflicted.add(v["id"])
             by_id[v["id"]] = v
+    # An id answered both ways got no decision; order must not pick one.
+    for vid in conflicted:
+        del by_id[vid]
     kept, rejected = [], []
     for issue in issues:
         v = by_id.get(issue["id"])

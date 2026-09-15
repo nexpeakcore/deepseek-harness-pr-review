@@ -73,7 +73,8 @@ def test_rerun_skips_verify(tmp_path, monkeypatch):
         (session_dir / "claims.json").write_text(json.dumps(fake_claims))
         return fake_claims
 
-    def fake_setup_workspace(owner, repo, n, workspace, remote_url=None):
+    def fake_setup_workspace(owner, repo, n, workspace, remote_url=None,
+                             head_sha=None):
         fake_setup_calls.append(1)
 
     def fake_run_verify(cfg, workspace, session_dir, snapshot, claims):
@@ -116,7 +117,8 @@ def test_verify_run_bumps_rounds(tmp_path, monkeypatch):
         (session_dir / "claims.json").write_text(json.dumps([]))
         return []
 
-    def fake_setup_workspace(owner, repo, n, workspace, remote_url=None):
+    def fake_setup_workspace(owner, repo, n, workspace, remote_url=None,
+                             head_sha=None):
         pass
 
     def fake_run_verify(cfg, workspace, session_dir, snapshot, claims):

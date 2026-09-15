@@ -428,3 +428,16 @@ def test_two_different_defects_on_one_line_are_both_posted():
          _confirmed(line=3, category="correctness", title="off by one")],
         FILES, comments)
     assert again == [] and skipped["already_posted"] == 2
+
+
+def test_a_verifier_answering_both_ways_decides_nothing():
+    """Codex review on #27: with conflicting duplicates, whichever came last
+    decided whether the issue was posted or discarded."""
+    issues = normalize_issues([_issue()])
+    for order in (("CONFIRMED", "REJECTED"), ("REJECTED", "CONFIRMED")):
+        kept, rejected = apply_verdicts(issues, [{"id": "K1", "verdict": v}
+                                                 for v in order])
+        assert rejected == [] and kept[0]["verified"] is None
+    # A repeated, agreeing answer is still an answer.
+    kept, _ = apply_verdicts(issues, [{"id": "K1", "verdict": "CONFIRMED"}] * 2)
+    assert kept[0]["verified"] is True

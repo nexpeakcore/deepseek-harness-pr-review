@@ -83,7 +83,7 @@
         <td><span class="verdict v-{{ i.severity|lower }}">{{ i.severity }}</span></td>
         <td>{{ i.category }}</td>
         <td class="muted"><a target="_blank" rel="noopener"
-          href="https://github.com/{{ repo_owner }}/{{ repo_name }}/blob/{{ detail.head_sha or detail.pr.head }}/{{ i.file }}#L{{ i.line }}">{{ i.file }}:{{ i.line }}</a></td>
+          href="https://github.com/{{ repo_owner }}/{{ repo_name }}/blob/{{ detail.head_sha or detail.pr.head }}/{{ i.file|urlencode }}#L{{ i.line }}">{{ i.file }}:{{ i.line }}</a></td>
         <td><b>{{ i.id }}</b> {{ i.title }}
           {% if i.scenario %}<div class="muted issue-scenario">When: {{ i.scenario }}</div>{% endif %}</td>
         <td>{% if i.severity in ('BLOCKER', 'MAJOR') %}

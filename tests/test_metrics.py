@@ -85,14 +85,16 @@ def test_pr_record_corrupt_json_skipped(tmp_path):
 
 def test_repo_record_aggregates(tmp_path):
     findings = {
-        "claims": [{"id": "C1", "status": "FAIL", "evidence": [], "note": ""}],
+        "claims": [{"id": "C1", "status": "FAIL", "evidence": [], "note": ""},
+                   {"id": "C2", "status": "PARTIAL", "evidence": [], "note": ""}],
         "docs": [], "impact": [], "threads": [], "unresolved_questions": [],
     }
     _write_session(tmp_path, "o", "r", 7, snapshot=SNAPSHOT, findings=EMPTY_FINDINGS)
     _write_session(tmp_path, "o", "r", 8, snapshot=SNAPSHOT, findings=findings)
     rec = metrics.repo_record(tmp_path, "o", "r")
     assert rec["prs_total"] == 2
-    assert rec["bugs_total"] == 1
+    assert rec["bugs_total"] == 1          # the FAIL
+    assert rec["attention_total"] == 1     # the PARTIAL — the NEEDS A LOOK card
     assert rec["doc_errors_total"] == 0
     assert rec["verdict_count"] == {"ACCURATE": 0, "PARTIAL": 0,
                                     "CONTRADICTED": 1, "NO_CLAIMS": 1,

@@ -69,6 +69,38 @@ def test_setup_workspace_rerun_existing_checkout(tmp_path):
     assert (ws / "app.py").read_text() == "print('feature v2')\n"
 
 
+def _git(*args, cwd):
+    return subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", *args],
+                          cwd=cwd, check=True, capture_output=True, text=True).stdout.strip()
+
+
+def test_setup_workspace_pins_the_snapshotted_head(tmp_path):
+    """Codex review on #27: a push between the snapshot and the fetch had the
+    agents read a newer revision than the one the review describes."""
+    origin = tmp_path / "origin"
+    origin.mkdir()
+    _git("init", "-q", "-b", "main", cwd=origin)
+    (origin / "app.py").write_text("print('base')\n")
+    _git("add", ".", cwd=origin)
+    _git("commit", "-qm", "base", cwd=origin)
+    _git("checkout", "-q", "-b", "pull/7/head", cwd=origin)
+    (origin / "app.py").write_text("print('snapshotted')\n")
+    _git("commit", "-qam", "feat", cwd=origin)
+    snapshotted = _git("rev-parse", "HEAD", cwd=origin)
+    # Pushed after the snapshot was taken:
+    (origin / "app.py").write_text("print('newer')\n")
+    _git("commit", "-qam", "feat2", cwd=origin)
+    _git("checkout", "-q", "main", cwd=origin)
+
+    ws = tmp_path / "ws"
+    setup_workspace("demo", "app", 7, ws, remote_url=str(origin), head_sha=snapshotted)
+    assert (ws / "app.py").read_text() == "print('snapshotted')\n"
+
+    with pytest.raises(RuntimeError, match="no longer fetchable"):
+        setup_workspace("demo", "app", 7, ws, remote_url=str(origin),
+                        head_sha="0" * 40)
+
+
 def test_parse_findings_ok(tmp_path):
     f = tmp_path / "findings.json"
     f.write_text(json.dumps({"claims": [{"id": "C1", "status": "PASS",
@@ -632,13 +664,16 @@ def test_review_input_is_utf8_whatever_the_locale(tmp_path):
     import sys
 
     text = "đã sửa — ✓"
+    # The text is spelled in ASCII escapes inside the child: passed through
+    # argv, a legacy locale would decode it into surrogates before the write
+    # under test ever ran (Codex review on #27).
     code = ("import sys, locale, pathlib; from src.verify import _write_input; "
-            "_write_input(pathlib.Path(sys.argv[1]), sys.argv[2]); "
+            f"_write_input(pathlib.Path(sys.argv[1]), {ascii(text)}); "
             "print(locale.getencoding())")
     env = {**os.environ, "PYTHONUTF8": "0", "LC_ALL": "en_US.ISO8859-1",
            "LANG": "en_US.ISO8859-1", "PYTHONPATH": "."}
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    proc = subprocess.run([sys.executable, "-c", code, str(tmp_path / "d.patch"), text],
+    proc = subprocess.run([sys.executable, "-c", code, str(tmp_path / "d.patch")],
                           capture_output=True, text=True, env=env, cwd=root)
     if proc.returncode == 0 and proc.stdout.strip().lower().replace("-", "") == "utf8":
         pytest.skip("no non-UTF-8 locale available here")

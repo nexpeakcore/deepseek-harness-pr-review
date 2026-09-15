@@ -85,12 +85,25 @@ def _run_git(args: list[str], cwd: Path) -> None:
         raise RuntimeError(f"git {' '.join(args)} failed: {proc.stderr.strip()}")
 
 
+def _has_commit(sha: str, cwd: Path) -> bool:
+    return subprocess.run(["git", "cat-file", "-e", f"{sha}^{{commit}}"], cwd=cwd,
+                          capture_output=True).returncode == 0
+
+
 def setup_workspace(owner: str, repo: str, n: int, workspace: Path,
-                    remote_url: str | None = None) -> None:
+                    remote_url: str | None = None,
+                    head_sha: str | None = None) -> None:
     """Clone the repo (first time) + checkout the PR head branch into the workspace (disposable).
 
     The path must resolve to an absolute one: subprocess cwd + a relative target
     would create nested directories in the wrong place (e.g. pr-77/sessions/.../workspace).
+
+    With head_sha, the checkout is pinned to the commit the snapshot was taken
+    at. A push landing between the snapshot and this fetch — claim extraction
+    runs in between — would otherwise have the agents read a newer revision
+    than the patches, the report and the inline coordinates describe. If that
+    commit cannot be had (a force-push dropped it), the review fails, and the
+    next round snapshots the new head.
     """
     workspace = workspace.resolve()
     if not workspace.exists():
@@ -100,7 +113,18 @@ def setup_workspace(owner: str, repo: str, n: int, workspace: Path,
     # fetch vào FETCH_HEAD (không dùng refspec :branch — git từ chối fetch
     # vào branch đang checkout khi re-review); checkout -B force-reset branch
     _run_git(["fetch", "origin", f"pull/{n}/head"], workspace)
-    _run_git(["checkout", "-B", branch, "FETCH_HEAD"], workspace)
+    target = "FETCH_HEAD"
+    if head_sha:
+        if not _has_commit(head_sha, workspace):
+            subprocess.run(["git", "fetch", "origin", head_sha], cwd=workspace,
+                           capture_output=True)
+        if not _has_commit(head_sha, workspace):
+            raise RuntimeError(
+                f"the snapshot's head {head_sha[:7]} is no longer fetchable — the "
+                f"PR was force-pushed since the snapshot; the next round reviews "
+                f"the new head")
+        target = head_sha
+    _run_git(["checkout", "-B", branch, target], workspace)
 
 
 def is_inferred(claims: list[dict]) -> bool:

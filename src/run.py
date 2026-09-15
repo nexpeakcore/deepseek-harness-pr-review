@@ -408,7 +408,8 @@ def main(argv: list[str] | None = None) -> int:
             if findings is None:
                 workspace = session_dir / "workspace"
                 _phase(3, "workspace", "cloning + checking out the PR head")
-                setup_workspace(owner, repo, int(num), workspace)
+                setup_workspace(owner, repo, int(num), workspace,
+                                head_sha=snapshot.get("head_sha"))
                 _phase(4, "verify", "starting agents")
                 findings = run_verify(cfg.phase_cfg(), workspace, session_dir,
                                       snapshot, claims)
