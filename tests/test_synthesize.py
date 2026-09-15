@@ -326,6 +326,17 @@ def test_ping_names_the_code_verdict():
     assert "**1** bug ·" in ping
 
 
+def test_comment_names_the_files_that_were_not_reviewed():
+    """Codex review on #27: 'No defects found' stood alone although a file
+    GitHub would not diff was never seen."""
+    clean = {**EMPTY, "code": [],
+             "code_meta": {"shards": 1, "failed_shards": 0,
+                           "patchless_files": ["big/generated.py"]}}
+    body = build_comment(_snap(), [], clean, [], completed_at="t")
+    assert "Code: no issues found (partial)" in body
+    assert "Not reviewed — GitHub sent no diff (too large): big/generated.py" in body
+
+
 def test_ping_posts_a_new_comment_every_round():
     """Ping KHÔNG idempotent — comment mới mỗi vòng mới có notification."""
     seen = []

@@ -406,11 +406,23 @@ def new_side_text(patch: str) -> dict[int, str]:
     return {n: text[1:] for kind, n, text in _walk_patch(patch) if kind in ("+", " ")}
 
 
+def _inert(text: str) -> str:
+    """Model-written text, made unable to carry an HTML comment.
+
+    Title and scenario come from an agent that read an untrusted PR. Left raw,
+    a prompt-injected title could smuggle a marker into a comment this tool's
+    own token posts — one the author filter would then trust. GitHub renders
+    &lt; as <, so readers see the same text.
+    """
+    return str(text).replace("<", "&lt;")
+
+
 def inline_body(issue: dict, anchor: str) -> str:
     icon = SEVERITY_ICON.get(issue["severity"], "")
-    lines = [f"{icon} **{issue['severity']} · {issue['category']}** — {issue['title']}"]
+    lines = [f"{icon} **{issue['severity']} · {issue['category']}** — "
+             f"{_inert(issue['title'])}"]
     if issue.get("scenario"):
-        lines += ["", f"**When:** {issue['scenario']}"]
+        lines += ["", f"**When:** {_inert(issue['scenario'])}"]
     lines += ["", "<sub>Harness code review · confirmed by a second agent</sub>",
               f"<!-- harness-code:{issue_key(issue)}:{anchor}:{issue['category']} -->"]
     return "\n".join(lines)
@@ -435,10 +447,12 @@ def plan_inline(issues: list[dict], files: list[dict],
     texts = {f.get("filename"): new_side_text(f.get("patch") or "") for f in files}
     at_spot, anchored, legacy = {}, {}, {}
     for c in existing:
-        m = INLINE_MARKER_RE.search(c.get("body") or "")
-        if not m:
+        found = INLINE_MARKER_RE.findall(c.get("body") or "")
+        if not found:
             continue
-        key, anchor, category = m.groups()
+        # The trailing marker is the one this tool appended; anything earlier
+        # in the body is text, however much it looks like a marker.
+        key, anchor, category = (group or None for group in found[-1])
         # `line` only: an outdated comment has none, and its original_line is
         # a coordinate in an older commit, not a line of this diff. Such a
         # comment is still matched by its digest.

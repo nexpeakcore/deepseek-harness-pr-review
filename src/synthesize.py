@@ -418,6 +418,12 @@ def build_comment(snapshot: dict, claims: list[dict], findings: dict,
               f"{i.get('file', '')}:{i.get('line', '')}", i.get("title", ""),
               i.get("scenario", ""), _verified_text(i)] for i in code_issues],
             color_cols={1, 6})
+    # "No defects found" must not stand alone when part of the change was
+    # never seen: name what the reader still has to check by hand.
+    patchless = (findings.get("code_meta") or {}).get("patchless_files") or []
+    if patchless and code_review.reviewed(findings):
+        code_table += ("<p>Not reviewed — GitHub sent no diff (too large): "
+                       + ", ".join(_html_escape(p) for p in patchless) + "</p>")
 
     sections += [
         _comment_section("Code review", "🛠", code_table,
