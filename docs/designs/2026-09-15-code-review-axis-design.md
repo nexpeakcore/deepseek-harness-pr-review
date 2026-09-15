@@ -33,10 +33,14 @@ descriptions and statements the agent could not check. PR #26 reported
    MINOR (real, low impact). Categories: correctness, error-handling,
    security, concurrency, resource, performance, test-gap.
 
-2. **Verify agent** — after the fan-out, one agent re-reads every BLOCKER and
-   MAJOR adversarially and returns CONFIRMED or REJECTED per id, rejecting
-   anything whose scenario depends on code it cannot find. It runs only when
-   there is something to check, so a clean PR pays nothing extra.
+2. **Verify agents** — after the fan-out, every BLOCKER and MAJOR is re-read
+   adversarially and answered CONFIRMED or REJECTED per id, rejecting anything
+   whose scenario depends on code it cannot find. Issues go in batches of 10,
+   one agent per batch, in parallel: a single verifier for every shard's
+   issues has no ceiling and runs out of budget partway down a long list. A
+   batch that dies leaves only its own issues unconfirmed (`code_meta.verify`
+   = `partial`). Verification runs only when there is something to check, so
+   a clean PR pays nothing extra.
 
    Rejected issues move to `findings.json:code_rejected` with the reason —
    kept, not deleted, so the tool's precision can be measured later. An id the
@@ -104,9 +108,11 @@ Not posted inline, but kept in the report:
   `commentable_lines()` computes the accepted set from the patch.
 - Issues already posted. Each comment carries
   `<!-- harness-code:<key> -->`, key = hash of file + category + normalized
-  title — not the line, which moves when anything above it changes. A new
-  round skips a key already present, and any line this tool already commented
-  on.
+  title — not the line, which moves when anything above it changes. The same
+  pattern flagged at two lines is two defects, so the second and later
+  occurrences (counted top to bottom) add their ordinal to the hash; the first
+  keeps the bare key. A new round skips a key already present, and any line
+  this tool already commented on.
 
 Posting never fails the review: an error is a warning in the log, like the
 round ping.

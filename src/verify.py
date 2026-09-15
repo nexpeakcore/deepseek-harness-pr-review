@@ -439,15 +439,27 @@ def run_verify(cfg: dict, workspace: Path, session_dir: Path, snapshot: dict,
     return findings
 
 
-def _code_verify_task(snapshot: dict, issues: list[dict]) -> dict:
-    out = "findings-code-verify.json"
-    return {
-        "name": "code-verify", "axis": "code-verify", "out": out,
-        "keys": ("verdicts",),
-        "prompt": code_review.build_verify_prompt(
-            _pr_context(snapshot), issues, SECURITY_BLOCK,
-            _write_instruction(out, code_review.VERDICTS_SCHEMA)),
-    }
+# BLOCKER/MAJOR issues per verify agent. One verifier for every shard's issues
+# has no ceiling: on a large PR it runs out of budget partway down the list,
+# and every issue it never reached stays unconfirmed — never posted inline.
+CODE_VERIFY_BATCH = 10
+
+
+def _code_verify_tasks(snapshot: dict, issues: list[dict]) -> list[dict]:
+    batches = [issues[i:i + CODE_VERIFY_BATCH]
+               for i in range(0, len(issues), CODE_VERIFY_BATCH)]
+    tasks = []
+    for idx, batch in enumerate(batches, start=1):
+        name = f"code-verify-{idx}" if len(batches) > 1 else "code-verify"
+        out = f"findings-{name}.json"
+        tasks.append({
+            "name": name, "axis": "code-verify", "out": out,
+            "keys": ("verdicts",), "issues": batch,
+            "prompt": code_review.build_verify_prompt(
+                _pr_context(snapshot), batch, SECURITY_BLOCK,
+                _write_instruction(out, code_review.VERDICTS_SCHEMA)),
+        })
+    return tasks
 
 
 def _finish_code_axis(cfg: dict, workspace: Path, session_dir: Path,
@@ -471,20 +483,26 @@ def _finish_code_axis(cfg: dict, workspace: Path, session_dir: Path,
     verdicts = None
     to_check = code_review.needs_verification(issues)
     if to_check:
-        task = _code_verify_task(snapshot, to_check)
-        (workspace / task["out"]).unlink(missing_ok=True)
-        _, part, error = _execute(cfg, workspace, session_dir, task, runner)
-        if part is None:
-            meta["verify"] = "failed"
-            findings["unresolved_questions"].append(
-                f"Review gap: the code-verify agent failed ({error}) — "
-                f"{len(to_check)} blocker/major code issue"
-                f"{'' if len(to_check) == 1 else 's'} unconfirmed.")
-        else:
-            meta["verify"] = "ok"
-            verdicts = part["verdicts"]
+        tasks = _code_verify_tasks(snapshot, to_check)
+        for task in tasks:
+            (workspace / task["out"]).unlink(missing_ok=True)
+        with ThreadPoolExecutor(max_workers=len(tasks)) as pool:
+            done = list(pool.map(
+                lambda t: _execute(cfg, workspace, session_dir, t, runner), tasks))
+        verdicts, failed = [], 0
+        for task, part, error in done:
+            if part is None:
+                failed += 1
+                n = len(task["issues"])
+                findings["unresolved_questions"].append(
+                    f"Review gap: the {task['name']} agent failed ({error}) — "
+                    f"{n} blocker/major code issue{'' if n == 1 else 's'} unconfirmed.")
+            else:
+                verdicts.extend(part["verdicts"])
+        meta["verify"] = ("failed" if failed == len(tasks)
+                          else "partial" if failed else "ok")
     kept, rejected = code_review.apply_verdicts(issues, verdicts)
-    if meta["verify"] == "ok":
+    if meta["verify"] in ("ok", "partial"):
         confirmed = sum(1 for i in kept if i.get("verified") is True)
         print(f"      code-verify: {confirmed} confirmed, "
               f"{len(rejected)} rejected", flush=True)

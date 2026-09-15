@@ -474,6 +474,37 @@ def test_code_review_off_leaves_no_code_key(tmp_path):
     assert "code" not in findings and "code" not in seen
 
 
+def test_code_verify_is_batched_and_a_dead_batch_only_costs_its_own(tmp_path,
+                                                                    monkeypatch):
+    """One verifier for every shard's issues has no ceiling; batches do."""
+    monkeypatch.setattr("src.verify.CODE_VERIFY_BATCH", 2)
+    ws, sd = _dirs(tmp_path)
+    many = [{"file": "a.py", "line": n, "severity": "MAJOR",
+             "category": "correctness", "title": f"bug {n}", "scenario": "s",
+             "evidence": []} for n in range(1, 6)]
+    base = _fake_runner({**PAYLOADS, "code": {"code": many,
+                                              "unresolved_questions": []}})
+    seen = []
+
+    def runner(cfg, workspace, session_dir, task):
+        if task["axis"] != "code-verify":
+            return base(cfg, workspace, session_dir, task)
+        seen.append(task["name"])
+        if task["name"] == "code-verify-2":
+            raise RuntimeError("out of budget")
+        (workspace / task["out"]).write_text(json.dumps({"verdicts": [
+            {"id": i["id"], "verdict": "CONFIRMED"} for i in task["issues"]]}))
+        return "log"
+
+    findings = run_verify({"model": "m"}, ws, sd, SNAP, _claims(1), runner=runner)
+    assert sorted(seen) == ["code-verify-1", "code-verify-2", "code-verify-3"]
+    assert {i["id"]: i["verified"] for i in findings["code"]} == {
+        "K1": True, "K2": True, "K3": None, "K4": None, "K5": True}
+    assert findings["code_meta"]["verify"] == "partial"
+    assert any("code-verify-2 agent failed" in q and "2 blocker/major" in q
+               for q in findings["unresolved_questions"])
+
+
 # --- agent backend selection ------------------------------------------------
 
 def test_select_runner_defaults_to_the_sdk_backend():

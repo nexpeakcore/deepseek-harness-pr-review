@@ -322,24 +322,31 @@ REVIEW_MARKER = "<!-- harness-code-review -->"
 SEVERITY_ICON = {"BLOCKER": "🔴", "MAJOR": "🟠", "MINOR": "⚪"}
 
 
-def issue_key(issue: dict) -> str:
+def issue_key(issue: dict, occurrence: int = 0) -> str:
     """Stable identity of an issue across rounds, for de-duplication.
 
     Deliberately not the line: an unrelated push above it moves the line, and
     the same defect would be posted again one line lower.
+
+    `occurrence` tells apart distinct issues that share file, category and
+    title — the same pattern flagged at two lines is two defects, and keying
+    them alike posted only the first. The first occurrence keeps the bare key,
+    so a comment posted before occurrences existed still matches.
     """
     title = re.sub(r"\W+", " ", issue.get("title", "").lower()).strip()
     raw = f"{issue.get('file', '')}|{issue.get('category', '')}|{title}"
+    if occurrence:
+        raw += f"|{occurrence}"
     return hashlib.sha1(raw.encode()).hexdigest()[:12]
 
 
-def inline_body(issue: dict) -> str:
+def inline_body(issue: dict, key: str) -> str:
     icon = SEVERITY_ICON.get(issue["severity"], "")
     lines = [f"{icon} **{issue['severity']} · {issue['category']}** — {issue['title']}"]
     if issue.get("scenario"):
         lines += ["", f"**When:** {issue['scenario']}"]
     lines += ["", "<sub>Harness code review · confirmed by a second agent</sub>",
-              f"<!-- harness-code:{issue_key(issue)} -->"]
+              f"<!-- harness-code:{key} -->"]
     return "\n".join(lines)
 
 
@@ -350,6 +357,9 @@ def plan_inline(issues: list[dict], files: list[dict],
     Posted: confirmed BLOCKER/MAJOR issues on a line inside the diff that this
     tool has not already commented on. Anything else stays in the report —
     GitHub rejects a whole review over one comment outside the diff.
+
+    Issues are walked top to bottom, so occurrence numbers of a repeated
+    pattern come out the same every round.
     """
     lines_by_file = {f.get("filename"): commentable_lines(f.get("patch") or "")
                      for f in files}
@@ -359,9 +369,9 @@ def plan_inline(issues: list[dict], files: list[dict],
         if m:
             seen_keys.add(m.group(1))
             seen_spots.add((c.get("path"), c.get("line") or c.get("original_line")))
-    comments = []
+    comments, occurrences = [], {}
     skipped = {"unconfirmed": 0, "outside_diff": 0, "already_posted": 0}
-    for issue in issues:
+    for issue in sorted(issues, key=lambda i: (i.get("file", ""), i.get("line") or 0)):
         if issue.get("severity") not in VERIFIED_SEVERITIES:
             continue
         if issue.get("verified") is not True:
@@ -370,7 +380,9 @@ def plan_inline(issues: list[dict], files: list[dict],
         if issue.get("line") not in lines_by_file.get(issue.get("file"), set()):
             skipped["outside_diff"] += 1
             continue
-        key = issue_key(issue)
+        base = issue_key(issue)
+        occurrences[base] = occurrences.get(base, -1) + 1
+        key = issue_key(issue, occurrences[base])
         spot = (issue["file"], issue["line"])
         if key in seen_keys or spot in seen_spots:
             skipped["already_posted"] += 1
@@ -378,7 +390,7 @@ def plan_inline(issues: list[dict], files: list[dict],
         seen_keys.add(key)
         seen_spots.add(spot)
         comments.append({"path": issue["file"], "line": issue["line"],
-                         "side": "RIGHT", "body": inline_body(issue)})
+                         "side": "RIGHT", "body": inline_body(issue, key)})
     return comments, skipped
 
 

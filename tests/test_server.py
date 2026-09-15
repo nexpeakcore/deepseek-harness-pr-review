@@ -83,6 +83,40 @@ def test_pr_page_tabs(client):
     assert "SKIPPED" in resp.text
 
 
+def test_pr_page_shows_code_issues(tmp_path, monkeypatch):
+    monkeypatch.setenv("DSH_SESSION_ROOT", str(tmp_path))
+    _write_session(
+        tmp_path, "o", "r", 5,
+        snapshot={**SNAPSHOT, "pr": 5, "head_sha": "abc1234"},
+        findings={**EMPTY_FINDINGS,
+                  "code": [{"id": "K2", "file": "src/pay.py", "line": 57,
+                            "severity": "MAJOR", "category": "error-handling",
+                            "title": "timeout reported as success",
+                            "scenario": "gateway times out", "evidence": [],
+                            "verified": None},
+                           {"id": "K1", "file": "src/pay.py", "line": 42,
+                            "severity": "BLOCKER", "category": "security",
+                            "title": "shell injection", "scenario": "name is a shell",
+                            "evidence": [], "verified": True}],
+                  "code_rejected": [{"id": "K3", "severity": "MAJOR",
+                                     "title": "x", "reason": "guarded"}],
+                  "code_meta": {"shards": 1, "failed_shards": 0, "verify": "ok"}})
+    html = TestClient(app).get("/repos/o/r/pr/5").text
+    assert "Code: 1 blocker · 1 major" in html
+    assert "Bugs: 2" in html
+    assert html.index("shell injection") < html.index("timeout reported")  # worst first
+    assert "When: name is a shell" in html
+    assert "/o/r/blob/abc1234/src/pay.py#L42" in html
+    assert "v-confirmed" in html and "v-unconfirmed" in html
+    assert "1 more reported" in html
+
+
+def test_pr_page_says_when_the_code_axis_did_not_run(client):
+    html = client.get("/repos/sample-org/sample-app/pr/77").text
+    assert "Code: not reviewed" in html
+    assert "did not run for this review" in html
+
+
 def test_unknown_repo_404(client):
     assert client.get("/repos/sample-org/nope").status_code == 404
 

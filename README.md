@@ -220,7 +220,7 @@ Results land in `sessions/<owner>/<repo>/pr-<n>/report.md` (change the directory
      never fills up with stale reports. It opens with a `Review complete` line
      carrying the timestamp, round number and reviewed commit.
    - **A round ping** — a short new comment per round with the headline numbers
-     (verdict, risks, doc errors, claim breakdown) and a link up to the report.
+     (both verdicts, bugs, needs a look, doc errors, claims) and a link up to the report.
      GitHub raises no notification for an edit, so this is the only part that
      actually reaches subscribers. Disable with `--no-ping`, or
      `ping_comment: false` in `autoreview.yml`.

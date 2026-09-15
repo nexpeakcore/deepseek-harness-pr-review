@@ -227,6 +227,22 @@ def test_plan_inline_dedupes_within_one_round():
     assert len(comments) == 1 and skipped["already_posted"] == 1
 
 
+def _key_of(comment):
+    return code_review.INLINE_MARKER_RE.search(comment["body"]).group(1)
+
+
+def test_plan_inline_posts_the_same_pattern_at_two_lines():
+    """Same file, category and title at two lines is two defects, not one."""
+    comments, _ = plan_inline([_confirmed(line=21), _confirmed(line=3)], FILES, [])
+    assert [c["line"] for c in comments] == [3, 21]
+    assert {_key_of(c) for c in comments} == {issue_key(_issue()),       # bare
+                                              issue_key(_issue(), 1)}
+    # Next round: both already posted, neither goes up again.
+    again, skipped = plan_inline([_confirmed(line=3), _confirmed(line=21)], FILES,
+                                 [{**c, "path": c["path"]} for c in comments])
+    assert again == [] and skipped["already_posted"] == 2
+
+
 class _FakeGh:
     def __init__(self, existing=()):
         self.calls, self.payloads, self.existing = [], [], list(existing)

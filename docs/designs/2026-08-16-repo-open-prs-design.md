@@ -46,6 +46,8 @@ Table columns: `# | Title | Draft | Review status | Risks | Doc errors`
 - `doc_errors` = docs `WRONG` + `FABRICATED` + `STALE`
 - Demo fixture (tests/test_metrics.py): claims PARTIAL/RISK/STALE combinations assert the counting rules
   → risks = 4, doc_errors = 3 (covered by test_metrics.py::test_pr_record_wider_metrics: FAIL+PARTIAL claims, BROKEN+RISK impacts, WRONG+FABRICATED+STALE docs)
+  — under the superseding rule that fixture now asserts bugs = 2 (FAIL + BROKEN)
+  and attention = 2 (PARTIAL + RISK)
 
 **Data flow:**
 - `metrics.pr_record` adds `rounds` (from rounds.txt, fallback 1)
