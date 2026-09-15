@@ -364,8 +364,10 @@ def code_verdict_label(findings: dict) -> str:
 
 # --- inline comments -------------------------------------------------------
 
-# key, then — since comments carry it — a digest of the code on the flagged line.
-INLINE_MARKER_RE = re.compile(r"<!-- harness-code:([0-9a-f]{12})(?::([0-9a-f]{8}))? -->")
+# key, then — since comments carry them — a digest of the code on the flagged
+# line and the category. Older markers stop after the key or the digest.
+INLINE_MARKER_RE = re.compile(
+    r"<!-- harness-code:([0-9a-f]{12})(?::([0-9a-f]{8}))?(?::([a-z-]+))? -->")
 REVIEW_MARKER = "<!-- harness-code-review -->"
 SEVERITY_ICON = {"BLOCKER": "🔴", "MAJOR": "🟠", "MINOR": "⚪"}
 
@@ -403,7 +405,7 @@ def inline_body(issue: dict, anchor: str) -> str:
     if issue.get("scenario"):
         lines += ["", f"**When:** {issue['scenario']}"]
     lines += ["", "<sub>Harness code review · confirmed by a second agent</sub>",
-              f"<!-- harness-code:{issue_key(issue)}:{anchor} -->"]
+              f"<!-- harness-code:{issue_key(issue)}:{anchor}:{issue['category']} -->"]
     return "\n".join(lines)
 
 
@@ -415,11 +417,13 @@ def plan_inline(issues: list[dict], files: list[dict],
     tool has not already commented on. Anything else stays in the report —
     GitHub rejects a whole review over one comment outside the diff.
 
-    "Already commented on" means, in order: this tool's comment sits on the
-    issue's line; or an earlier comment carries the issue's key and the digest
-    of the code on its line — the defect moved, and its code moved with it.
-    Comments from before digests existed carry the key alone, and each absorbs
-    one moved issue by count.
+    "Already commented on" means, in order: this tool's comment of the same
+    category sits on the issue's line — a reworded title of the same defect,
+    while a different defect on that line is still posted; or an earlier
+    comment carries the issue's key and the digest of the code on its line —
+    the defect moved, and its code moved with it. Markers from before the
+    category claim their whole line; markers from before the digest carry the
+    key alone, and each absorbs one moved issue by count.
     """
     texts = {f.get("filename"): new_side_text(f.get("patch") or "") for f in files}
     at_spot, anchored, legacy = {}, {}, {}
@@ -427,12 +431,12 @@ def plan_inline(issues: list[dict], files: list[dict],
         m = INLINE_MARKER_RE.search(c.get("body") or "")
         if not m:
             continue
-        key, anchor = m.group(1), m.group(2)
+        key, anchor, category = m.groups()
         # `line` only: an outdated comment has none, and its original_line is
         # a coordinate in an older commit, not a line of this diff. Such a
         # comment is still matched by its digest.
         spot = (c.get("path"), c.get("line"))
-        at_spot[spot] = (key, anchor)
+        at_spot.setdefault(spot, []).append((key, anchor, category))
         if anchor:
             anchored[key, anchor] = anchored.get((key, anchor), 0) + 1
         else:
@@ -449,19 +453,25 @@ def plan_inline(issues: list[dict], files: list[dict],
             skipped["outside_diff"] += 1
             continue
         eligible.append(issue)
-    current_spots = {(i["file"], i["line"]) for i in eligible}
-    # A comment still on a current issue's line belongs to that issue, and must
-    # not also be claimed by a moved one.
-    for spot in current_spots & at_spot.keys():
-        key, anchor = at_spot[spot]
-        if anchor:
-            anchored[key, anchor] -= 1
-    legacy_moved = {key: len(spots - current_spots) for key, spots in legacy.items()}
-    comments, posted = [], set(at_spot)
+    current = {}
+    for i in eligible:
+        current.setdefault((i["file"], i["line"]), set()).add(i["category"])
+    # A comment still on a line holding an issue of its category belongs to
+    # that issue, and must not also be claimed by a moved one.
+    for spot, marks in at_spot.items():
+        cats = current.get(spot)
+        for key, anchor, category in marks:
+            if anchor and cats and (category is None or category in cats):
+                anchored[key, anchor] -= 1
+    legacy_moved = {key: len(spots - set(current)) for key, spots in legacy.items()}
+    # None stands for a marker from before categories: it claims the line.
+    claimed = {spot: {cat for _, _, cat in marks} for spot, marks in at_spot.items()}
+    comments = []
     for issue in eligible:
         key, spot = issue_key(issue), (issue["file"], issue["line"])
         anchor = line_anchor(texts[issue["file"]][issue["line"]])
-        if spot in posted:
+        cats = claimed.get(spot, set())
+        if None in cats or issue["category"] in cats:
             skipped["already_posted"] += 1
         elif anchored.get((key, anchor), 0) > 0:
             anchored[key, anchor] -= 1
@@ -470,7 +480,7 @@ def plan_inline(issues: list[dict], files: list[dict],
             legacy_moved[key] -= 1
             skipped["already_posted"] += 1
         else:
-            posted.add(spot)
+            claimed.setdefault(spot, set()).add(issue["category"])
             comments.append({"path": issue["file"], "line": issue["line"],
                              "side": "RIGHT", "body": inline_body(issue, anchor)})
     return comments, skipped

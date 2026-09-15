@@ -122,7 +122,11 @@ Not posted inline, but kept in the report:
 - Issues already posted. Each comment carries
   `<!-- harness-code:<key> -->`, key = hash of file + category + normalized
   title — not the line, which moves when anything above it changes — plus a
-  digest of the code on the flagged line: `<!-- harness-code:<key>:<digest> -->`.
+  digest of the code on the flagged line, and the category:
+  `<!-- harness-code:<key>:<digest>:<category> -->`. On one line, a comment
+  claims only issues of its own category — a reworded title of the same
+  defect is not posted twice, while a second, different defect on that line
+  (security next to correctness) still is.
   A new round skips an issue on a line this tool already commented on, and an
   issue whose key and line-code digest match an earlier comment: the defect
   moved, and its code moved with it. So the same pattern at two lines posts

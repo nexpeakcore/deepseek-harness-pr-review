@@ -196,7 +196,7 @@ def test_plan_inline_posts_confirmed_blocker_and_major_in_the_diff():
     assert "MAJOR · correctness" in body and "off by one" in body
     assert "n=0 returns -1" in body
     anchor = code_review.line_anchor("added")         # the code on line 3
-    assert f"<!-- harness-code:{issue_key(_issue())}:{anchor} -->" in body
+    assert f"<!-- harness-code:{issue_key(_issue())}:{anchor}:correctness -->" in body
     assert skipped == {"unconfirmed": 0, "outside_diff": 0, "already_posted": 0}
 
 
@@ -412,3 +412,19 @@ def test_only_this_tools_own_markers_suppress_an_issue():
     gh = Gh(existing=[ours])
     assert post_inline_review("o", "r", 7, {"files": FILES},
                               _findings(_confirmed(line=3)), gh=gh)["posted"] == 0
+
+
+def test_two_different_defects_on_one_line_are_both_posted():
+    """Found by this PR's fifth review: the second of two distinct confirmed
+    issues on one line was skipped as 'already posted' though it never was."""
+    issues = [_confirmed(line=3, category="security", title="shell injection"),
+              _confirmed(line=3, category="correctness", title="off by one")]
+    comments, skipped = plan_inline(issues, FILES, [])
+    assert len(comments) == 2 and skipped["already_posted"] == 0
+    # Next round both are on record, and a reworded title of the same defect
+    # (same category, same line) is not posted again.
+    again, skipped = plan_inline(
+        [_confirmed(line=3, category="security", title="command injection"),
+         _confirmed(line=3, category="correctness", title="off by one")],
+        FILES, comments)
+    assert again == [] and skipped["already_posted"] == 2
