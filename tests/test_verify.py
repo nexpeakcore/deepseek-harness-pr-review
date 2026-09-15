@@ -646,6 +646,21 @@ def test_review_input_is_utf8_whatever_the_locale(tmp_path):
     assert (tmp_path / "d.patch").read_bytes() == text.encode("utf-8")
 
 
+def test_agent_outputs_never_touch_the_prs_own_files(tmp_path):
+    """Codex review on #27: output files at the checkout root were unlinked
+    and overwritten when the PR had a file of the same name, and a directory
+    of that name aborted the review."""
+    ws, sd = _dirs(tmp_path)
+    (ws / "findings-code.json").write_text('{"theirs": true}')
+    (ws / "findings-docs.json").mkdir()
+    findings = run_verify({"model": "m"}, ws, sd, SNAP, _claims(1),
+                          runner=_fake_runner(PAYLOADS))
+    assert (ws / "findings-code.json").read_text() == '{"theirs": true}'
+    assert (ws / "findings-docs.json").is_dir()
+    assert findings["docs"][0]["status"] == "STALE"          # docs still landed
+    assert findings["code_meta"]["failed_shards"] == 0
+
+
 # --- agent backend selection ------------------------------------------------
 
 def test_select_runner_defaults_to_the_sdk_backend():

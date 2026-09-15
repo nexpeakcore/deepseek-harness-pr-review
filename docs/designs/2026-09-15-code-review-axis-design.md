@@ -142,10 +142,14 @@ The diff files the code agents read live in the PR's own checkout, where the
 PR could commit a symlink — or a directory — at any name it can predict. So
 they go into a directory created fresh for every review (`mkdtemp`,
 `.harness-review-<random>`), which the PR cannot name in advance, and are
-created with `O_EXCL | O_NOFOLLOW` besides. The directory is created only when
-the code axis runs. The previous round's directory is removed by the name
-recorded for it in the session (`input-dir.txt`), never by pattern: the PR may
-have a directory of its own under that prefix, and that is code to review. `normalize_issues()` drops an issue with no
+created with `O_EXCL | O_NOFOLLOW` besides. Every agent's output file
+(`findings-<name>.json`, for claims, docs and impact too) goes into the same
+directory, so no path this tool writes or deletes sits where the PR's own files
+are — a PR shipping a `findings-code.json` keeps it, and one shipping a
+directory of that name no longer aborts the review. The previous round's
+directory is removed by the name recorded for it in the session
+(`work-dir.txt`), never by pattern: the PR may have a directory of its own
+under that prefix, and that is code to review. `normalize_issues()` drops an issue with no
 scenario, so the rule holds even when a model ignores the prompt.
 
 GitHub sends no patch for a text file whose diff is too large. The head

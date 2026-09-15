@@ -123,6 +123,16 @@ def _write_instruction(out_name: str, schema: str) -> str:
             f"markdown fence, plain JSON):\n{schema}\n")
 
 
+def _out(work_dir: str, name: str) -> str:
+    """Where agent `name` writes its part file.
+
+    Inside this review's own directory, never at the checkout root: that is
+    the PR's tree, and a PR shipping a file of the same name would have it
+    deleted and overwritten — or, with a directory there, the review aborted.
+    """
+    return f"{work_dir}/findings-{name}.json" if work_dir else f"findings-{name}.json"
+
+
 def build_claims_prompt(snapshot: dict, claims: list[dict], out_name: str,
                         shard: tuple[int, int] | None = None) -> str:
     """Verify one batch of claims against the code. Nothing else."""
@@ -199,7 +209,7 @@ Requirements:
 {SECURITY_BLOCK}{_write_instruction(out_name, IMPACT_SCHEMA)}"""
 
 
-def _code_tasks(snapshot: dict, input_dir: str = "") -> list[dict]:
+def _code_tasks(snapshot: dict, work_dir: str = "") -> list[dict]:
     """One code agent per shard of changed files, each with its diff as input.
 
     The diff goes into the workspace as a file rather than into the prompt: a
@@ -211,11 +221,11 @@ def _code_tasks(snapshot: dict, input_dir: str = "") -> list[dict]:
     tasks = []
     for idx, files in enumerate(shards, start=1):
         name = f"code-{idx}" if len(shards) > 1 else "code"
-        out = f"findings-{name}.json"
-        diff = f"{input_dir}/review-diff-{name}.patch" if input_dir \
+        out = _out(work_dir, name)
+        diff = f"{work_dir}/review-diff-{name}.patch" if work_dir \
             else f"review-diff-{name}.patch"
         tasks.append({
-            "name": name, "axis": "code", "out": out,
+            "name": name, "axis": "code", "out": out, "work_dir": work_dir,
             "keys": ("code", "unresolved_questions"),
             "inputs": {diff: code_review.render_diff(files)},
             "patchless": [f["filename"] for f in files
@@ -230,14 +240,14 @@ def _code_tasks(snapshot: dict, input_dir: str = "") -> list[dict]:
 
 def plan_tasks(snapshot: dict, claims: list[dict],
                doc_candidates: list[dict], code: bool = True,
-               input_dir: str = "") -> list[dict]:
+               work_dir: str = "") -> list[dict]:
     """The agents this review needs, each with its own prompt and output file."""
     tasks = []
     shards = [claims[i:i + CLAIMS_SHARD_SIZE]
               for i in range(0, len(claims), CLAIMS_SHARD_SIZE)]
     for idx, shard in enumerate(shards, start=1):
         name = f"claims-{idx}" if len(shards) > 1 else "claims"
-        out = f"findings-{name}.json"
+        out = _out(work_dir, name)
         tasks.append({
             "name": name, "axis": "claims", "out": out,
             "keys": ("claims", "unresolved_questions"),
@@ -245,18 +255,19 @@ def plan_tasks(snapshot: dict, claims: list[dict],
                 snapshot, shard, out,
                 shard=(idx, len(shards)) if len(shards) > 1 else None),
         })
+    docs_out, impact_out = _out(work_dir, "docs"), _out(work_dir, "impact")
     tasks.append({
-        "name": "docs", "axis": "docs", "out": "findings-docs.json",
+        "name": "docs", "axis": "docs", "out": docs_out,
         "keys": ("docs", "unresolved_questions"),
-        "prompt": build_docs_prompt(snapshot, doc_candidates, "findings-docs.json"),
+        "prompt": build_docs_prompt(snapshot, doc_candidates, docs_out),
     })
     tasks.append({
-        "name": "impact", "axis": "impact", "out": "findings-impact.json",
+        "name": "impact", "axis": "impact", "out": impact_out,
         "keys": ("impact", "threads", "unresolved_questions"),
-        "prompt": build_impact_prompt(snapshot, claims, "findings-impact.json"),
+        "prompt": build_impact_prompt(snapshot, claims, impact_out),
     })
     if code:
-        tasks += _code_tasks(snapshot, input_dir)
+        tasks += _code_tasks(snapshot, work_dir)
     return tasks
 
 
@@ -420,14 +431,16 @@ def _write_input(path: Path, content: str) -> None:
         f.write(content)
 
 
-INPUT_DIR_RECORD = "input-dir.txt"
+WORK_DIR_RECORD = "work-dir.txt"
 
 
-def _fresh_input_dir(workspace: Path, session_dir: Path) -> str:
-    """A new directory for this review's input files, one the PR cannot name.
+def _fresh_work_dir(workspace: Path, session_dir: Path) -> str:
+    """A new directory for this review's files, one the PR cannot name.
 
-    Any fixed name can be pre-empted by the PR being reviewed: a symlink there
-    redirects the write out of the workspace, a directory there aborts the
+    Every path this tool writes into the checkout — the code agents' diffs and
+    every agent's part file — goes in here. Any fixed name can be pre-empted
+    by the PR being reviewed: a file there is deleted and overwritten, a
+    symlink redirects the write out of the workspace, a directory aborts the
     review. mkdtemp's random name cannot be.
 
     The previous round's directory is removed by the name recorded for it in
@@ -437,7 +450,7 @@ def _fresh_input_dir(workspace: Path, session_dir: Path) -> str:
     import shutil
     import tempfile
 
-    record = session_dir / INPUT_DIR_RECORD
+    record = session_dir / WORK_DIR_RECORD
     try:
         old = workspace / record.read_text().strip()
     except OSError:
@@ -457,13 +470,12 @@ def run_verify(cfg: dict, workspace: Path, session_dir: Path, snapshot: dict,
     runner = runner or select_runner(cfg)
     session_dir.mkdir(parents=True, exist_ok=True)
     doc_candidates = rank_docs(workspace, snapshot, claims)
-    code = cfg.get("code_review", True)
-    tasks = plan_tasks(snapshot, claims, doc_candidates, code=code,
-                       input_dir=_fresh_input_dir(workspace, session_dir)
-                       if code else "")
+    tasks = plan_tasks(snapshot, claims, doc_candidates,
+                       code=cfg.get("code_review", True),
+                       work_dir=_fresh_work_dir(workspace, session_dir))
 
-    # A part file left by the previous round would be read as this round's
-    # result if its agent fails — re-review must start from nothing.
+    # The work directory is new, so no part file from the previous round can be
+    # read as this round's; the unlink stays for a runner that reuses paths.
     for task in tasks:
         (workspace / task["out"]).unlink(missing_ok=True)
         for name, content in task.get("inputs", {}).items():
@@ -509,7 +521,7 @@ CODE_VERIFY_BATCH = 10
 
 
 def _code_verify_tasks(snapshot: dict, issues: list[dict],
-                       diff_files: list[str]) -> list[dict]:
+                       diff_files: list[str], work_dir: str = "") -> list[dict]:
     """Verify agents, one per batch. Each gets the diff, not just the head:
     whether the change caused a defect cannot be told from the head alone."""
     batches = [issues[i:i + CODE_VERIFY_BATCH]
@@ -517,7 +529,7 @@ def _code_verify_tasks(snapshot: dict, issues: list[dict],
     tasks = []
     for idx, batch in enumerate(batches, start=1):
         name = f"code-verify-{idx}" if len(batches) > 1 else "code-verify"
-        out = f"findings-{name}.json"
+        out = _out(work_dir, name)
         tasks.append({
             "name": name, "axis": "code-verify", "out": out,
             "keys": ("verdicts",), "issues": batch,
@@ -540,21 +552,21 @@ def _finish_code_axis(cfg: dict, workspace: Path, session_dir: Path,
     code_meta records what actually ran, because "no issues" and "the code
     agents all died" must never render the same.
     """
+    code_tasks = [task for task, _, _ in results if task["axis"] == "code"]
     code_parts = [part for task, part, _ in results if task["axis"] == "code"]
     issues = code_review.normalize_issues(
         [i for part in code_parts if part for i in part["code"]])
     meta = {"shards": len(code_parts),
             "failed_shards": sum(1 for part in code_parts if part is None),
             "verify": "skipped",
-            "patchless_files": sorted(
-                name for task, _, _ in results if task["axis"] == "code"
-                for name in task.get("patchless", []))}
+            "patchless_files": sorted(name for task in code_tasks
+                                      for name in task.get("patchless", []))}
     verdicts = None
     to_check = code_review.needs_verification(issues)
     if to_check:
-        diff_files = [name for task, _, _ in results if task["axis"] == "code"
-                      for name in task.get("inputs", {})]
-        tasks = _code_verify_tasks(snapshot, to_check, diff_files)
+        diff_files = [name for task in code_tasks for name in task.get("inputs", {})]
+        tasks = _code_verify_tasks(snapshot, to_check, diff_files,
+                                   code_tasks[0].get("work_dir", ""))
         for task in tasks:
             (workspace / task["out"]).unlink(missing_ok=True)
         with ThreadPoolExecutor(max_workers=len(tasks)) as pool:
