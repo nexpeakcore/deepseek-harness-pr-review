@@ -412,7 +412,7 @@ def test_run_verify_confirms_and_rejects_code_issues(tmp_path, capsys):
     assert findings["code_rejected"][0]["reason"] == "name is validated upstream"
     assert findings["code_meta"] == {"shards": 1, "failed_shards": 0, "verify": "ok",
                                      "patchless_files": []}
-    assert (ws / "review-diff-code.patch").exists()
+    assert list(ws.glob(".harness-review-*/review-diff-code.patch"))
     assert "code-verify: 1 confirmed, 1 rejected" in capsys.readouterr().out
 
 
@@ -522,18 +522,72 @@ def test_code_verify_is_batched_and_a_dead_batch_only_costs_its_own(tmp_path,
                for q in findings["unresolved_questions"])
 
 
-def test_review_input_never_follows_a_symlink_the_pr_committed(tmp_path):
-    """The workspace is the PR's tree; a link at our file name must not be
-    a way to write outside it."""
+def test_review_inputs_go_where_the_pr_cannot_plant_anything(tmp_path):
+    """The workspace is the PR's tree. A symlink or a directory it commits at
+    a predictable name must neither redirect the write nor stop the review."""
     ws, sd = _dirs(tmp_path)
     target = tmp_path / "outside.txt"
     target.write_text("precious")
     (ws / "review-diff-code.patch").symlink_to(target)
-    run_verify({"model": "m"}, ws, sd, SNAP, _claims(1),
-               runner=_fake_runner(PAYLOADS))
+    (ws / "review-diff-code-1.patch").mkdir()
+    base, seen = _fake_runner(PAYLOADS), {}
+
+    def runner(cfg, workspace, session_dir, task):
+        if task["axis"] == "code":
+            diff = next(w for w in task["prompt"].split()
+                        if w.startswith(".harness-review-"))
+            seen["diff"] = (workspace / diff).read_text()
+        return base(cfg, workspace, session_dir, task)
+
+    findings = run_verify({"model": "m"}, ws, sd, SNAP, _claims(1), runner=runner)
     assert target.read_text() == "precious"
-    assert not (ws / "review-diff-code.patch").is_symlink()
-    assert "=== a.py" in (ws / "review-diff-code.patch").read_text()
+    assert "=== a.py" in seen["diff"]
+    assert findings["code_meta"]["failed_shards"] == 0
+
+
+def test_a_previous_rounds_input_directory_is_cleared(tmp_path):
+    ws, sd = _dirs(tmp_path)
+    for _ in range(2):
+        run_verify({"model": "m"}, ws, sd, SNAP, _claims(1),
+                   runner=_fake_runner(PAYLOADS))
+    assert len(list(ws.glob(".harness-review-*"))) == 1
+
+
+def test_a_verifier_cannot_decide_another_batchs_issue(tmp_path, monkeypatch):
+    """Codex review on #27: batch 1 rejecting K3 must not override batch 2,
+    which was the one asked about K3 and confirmed it."""
+    monkeypatch.setattr("src.verify.CODE_VERIFY_BATCH", 2)
+    ws, sd = _dirs(tmp_path)
+    many = [{"file": "a.py", "line": n, "severity": "MAJOR",
+             "category": "correctness", "title": f"bug {n}", "scenario": "s",
+             "evidence": []} for n in range(1, 5)]
+    base = _fake_runner({**PAYLOADS, "code": {"code": many,
+                                              "unresolved_questions": []}})
+
+    def runner(cfg, workspace, session_dir, task):
+        if task["axis"] != "code-verify":
+            return base(cfg, workspace, session_dir, task)
+        verdicts = [{"id": i["id"], "verdict": "CONFIRMED"} for i in task["issues"]]
+        if task["name"] == "code-verify-1":
+            verdicts.append({"id": "K3", "verdict": "REJECTED", "reason": "not mine"})
+        (workspace / task["out"]).write_text(json.dumps({"verdicts": verdicts}))
+        return "log"
+
+    findings = run_verify({"model": "m"}, ws, sd, SNAP, _claims(1), runner=runner)
+    assert findings["code_rejected"] == []
+    assert all(i["verified"] is True for i in findings["code"])
+
+
+def test_the_verifier_reads_the_diff_and_rejects_what_predates_the_pr(tmp_path):
+    """Codex review on #27: confirming a defect because it happens at the head
+    is not enough — the change must have caused it."""
+    ws, sd = _dirs(tmp_path)
+    runner, seen = _recording(PAYLOADS)
+    run_verify({"model": "m"}, ws, sd, SNAP, _claims(1), runner=runner)
+    prompt = seen["code-verify"]
+    diff = next(w for w in prompt.split() if w.startswith(".harness-review-"))
+    assert diff.endswith("review-diff-code.patch")
+    assert "predates this PR" in prompt
 
 
 # --- agent backend selection ------------------------------------------------

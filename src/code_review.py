@@ -101,7 +101,8 @@ def is_patchless(f: dict) -> bool:
     agent can review the change — and a shard holding one must not read as
     clean. These are recorded and make the code verdict partial.
     """
-    return (not f.get("patch") and f.get("status") != "removed"
+    # A deletion counts too: removing code can break every caller of it.
+    return (not f.get("patch")
             and (f.get("additions") or 0) + (f.get("deletions") or 0) > 0)
 
 
@@ -187,10 +188,12 @@ Rules:
 
 
 def build_verify_prompt(pr_context: str, issues: list[dict],
-                        security_block: str, write_instruction: str) -> str:
+                        diff_files: list[str], security_block: str,
+                        write_instruction: str) -> str:
     listed = json.dumps([{k: i.get(k) for k in
                           ("id", "file", "line", "severity", "category",
                            "title", "scenario")} for i in issues], indent=2)
+    diffs = ", ".join(diff_files) or "(not available)"
     return f"""
 You are in the workspace containing the PR code, checked out at the PR head.
 Task: adversarially check defects another reviewer reported in this PR. You
@@ -199,14 +202,21 @@ so a wrong one costs the author's trust in every later one.
 
 {pr_context}
 
+The change itself is in {diffs} — every line numbered in the NEW file,
+removed lines unnumbered. Read the part each defect touches.
+
 Reported defects:
 {listed}
 
 For each id, read the code and trace the scenario:
-- CONFIRMED — the scenario really happens with the code as written.
+- CONFIRMED — the scenario really happens with the code as written, and this
+  change caused it: it introduced the code, or made unchanged code newly
+  reachable or newly wrong.
 - REJECTED — it cannot happen (guarded elsewhere, a caller never passes that
-  value, a type or check rules it out, the code was misread), or it is not a
-  defect at all.
+  value, a type or check rules it out, the code was misread), it is not a
+  defect at all, or it predates this PR: the code involved is unchanged and
+  the change does not make it newly wrong. That may be a real bug, but it is
+  not this PR's, and it will not be posted on this PR's lines.
 
 When the scenario depends on something you cannot find in the code, REJECT
 it. Report every id exactly once.
@@ -344,7 +354,8 @@ def code_verdict_label(findings: dict) -> str:
 
 # --- inline comments -------------------------------------------------------
 
-INLINE_MARKER_RE = re.compile(r"<!-- harness-code:([0-9a-f]{12}) -->")
+# key, then — since comments carry it — a digest of the code on the flagged line.
+INLINE_MARKER_RE = re.compile(r"<!-- harness-code:([0-9a-f]{12})(?::([0-9a-f]{8}))? -->")
 REVIEW_MARKER = "<!-- harness-code-review -->"
 SEVERITY_ICON = {"BLOCKER": "🔴", "MAJOR": "🟠", "MINOR": "⚪"}
 
@@ -360,13 +371,29 @@ def issue_key(issue: dict) -> str:
     return hashlib.sha1(raw.encode()).hexdigest()[:12]
 
 
-def inline_body(issue: dict) -> str:
+def line_anchor(text: str) -> str:
+    """A digest of the code on a flagged line, blind to whitespace.
+
+    A push above an issue changes its line number, not the code on it, so the
+    code is what ties this round's issue to last round's comment. The key
+    alone cannot: the same pattern at two lines shares a key, and pairing by
+    position — then by count — handed an old comment to a new issue.
+    """
+    return hashlib.sha1(" ".join(text.split()).encode()).hexdigest()[:8]
+
+
+def new_side_text(patch: str) -> dict[int, str]:
+    """{new-file line: code} for every line GitHub accepts a comment on."""
+    return {n: text[1:] for kind, n, text in _walk_patch(patch) if kind in ("+", " ")}
+
+
+def inline_body(issue: dict, anchor: str) -> str:
     icon = SEVERITY_ICON.get(issue["severity"], "")
     lines = [f"{icon} **{issue['severity']} · {issue['category']}** — {issue['title']}"]
     if issue.get("scenario"):
         lines += ["", f"**When:** {issue['scenario']}"]
     lines += ["", "<sub>Harness code review · confirmed by a second agent</sub>",
-              f"<!-- harness-code:{issue_key(issue)} -->"]
+              f"<!-- harness-code:{issue_key(issue)}:{anchor} -->"]
     return "\n".join(lines)
 
 
@@ -378,24 +405,25 @@ def plan_inline(issues: list[dict], files: list[dict],
     tool has not already commented on. Anything else stays in the report —
     GitHub rejects a whole review over one comment outside the diff.
 
-    "Already commented on" is settled by count, per key. An issue on a line
-    that already carries this tool's comment is not posted again. Each earlier
-    comment of the same key that no current issue sits on stands for one issue
-    whose line moved, and absorbs exactly one. Whatever is left is new.
-
-    Keys cannot carry the difference themselves: the same pattern at two lines
-    shares a key, and numbering repeats by position handed an old comment's
-    key to a new issue above it — which was then skipped as already posted.
+    "Already commented on" means, in order: this tool's comment sits on the
+    issue's line; or an earlier comment carries the issue's key and the digest
+    of the code on its line — the defect moved, and its code moved with it.
+    Comments from before digests existed carry the key alone, and each absorbs
+    one moved issue by count.
     """
-    lines_by_file = {f.get("filename"): commentable_lines(f.get("patch") or "")
-                     for f in files}
-    posted_spots, spots_by_key = set(), {}
+    texts = {f.get("filename"): new_side_text(f.get("patch") or "") for f in files}
+    at_spot, anchored, legacy = {}, {}, {}
     for c in existing:
         m = INLINE_MARKER_RE.search(c.get("body") or "")
-        if m:
-            spot = (c.get("path"), c.get("line") or c.get("original_line"))
-            posted_spots.add(spot)
-            spots_by_key.setdefault(m.group(1), set()).add(spot)
+        if not m:
+            continue
+        key, anchor = m.group(1), m.group(2)
+        spot = (c.get("path"), c.get("line") or c.get("original_line"))
+        at_spot[spot] = (key, anchor)
+        if anchor:
+            anchored[key, anchor] = anchored.get((key, anchor), 0) + 1
+        else:
+            legacy.setdefault(key, set()).add(spot)
     eligible = []
     skipped = {"unconfirmed": 0, "outside_diff": 0, "already_posted": 0}
     for issue in sorted(issues, key=lambda i: (i.get("file", ""), i.get("line") or 0)):
@@ -404,25 +432,34 @@ def plan_inline(issues: list[dict], files: list[dict],
         if issue.get("verified") is not True:
             skipped["unconfirmed"] += 1
             continue
-        if issue.get("line") not in lines_by_file.get(issue.get("file"), set()):
+        if issue.get("line") not in texts.get(issue.get("file"), {}):
             skipped["outside_diff"] += 1
             continue
         eligible.append(issue)
     current_spots = {(i["file"], i["line"]) for i in eligible}
-    moved = {key: len(spots - current_spots) for key, spots in spots_by_key.items()}
-    comments = []
+    # A comment still on a current issue's line belongs to that issue, and must
+    # not also be claimed by a moved one.
+    for spot in current_spots & at_spot.keys():
+        key, anchor = at_spot[spot]
+        if anchor:
+            anchored[key, anchor] -= 1
+    legacy_moved = {key: len(spots - current_spots) for key, spots in legacy.items()}
+    comments, posted = [], set(at_spot)
     for issue in eligible:
         key, spot = issue_key(issue), (issue["file"], issue["line"])
-        if spot in posted_spots:
+        anchor = line_anchor(texts[issue["file"]][issue["line"]])
+        if spot in posted:
             skipped["already_posted"] += 1
-            continue
-        if moved.get(key, 0) > 0:
-            moved[key] -= 1
+        elif anchored.get((key, anchor), 0) > 0:
+            anchored[key, anchor] -= 1
             skipped["already_posted"] += 1
-            continue
-        posted_spots.add(spot)
-        comments.append({"path": issue["file"], "line": issue["line"],
-                         "side": "RIGHT", "body": inline_body(issue)})
+        elif legacy_moved.get(key, 0) > 0:
+            legacy_moved[key] -= 1
+            skipped["already_posted"] += 1
+        else:
+            posted.add(spot)
+            comments.append({"path": issue["file"], "line": issue["line"],
+                             "side": "RIGHT", "body": inline_body(issue, anchor)})
     return comments, skipped
 
 

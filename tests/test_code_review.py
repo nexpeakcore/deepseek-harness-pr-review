@@ -183,7 +183,8 @@ def test_plan_inline_posts_confirmed_blocker_and_major_in_the_diff():
     body = comments[0]["body"]
     assert "MAJOR · correctness" in body and "off by one" in body
     assert "n=0 returns -1" in body
-    assert f"<!-- harness-code:{issue_key(_issue())} -->" in body
+    anchor = code_review.line_anchor("added")         # the code on line 3
+    assert f"<!-- harness-code:{issue_key(_issue())}:{anchor} -->" in body
     assert skipped == {"unconfirmed": 0, "outside_diff": 0, "already_posted": 0}
 
 
@@ -199,12 +200,38 @@ def test_plan_inline_keeps_everything_else_in_the_report():
     assert skipped == {"unconfirmed": 1, "outside_diff": 2, "already_posted": 0}
 
 
-def test_plan_inline_never_posts_the_same_issue_twice():
-    first, _ = plan_inline([_confirmed(line=3)], FILES, [])
-    existing = [{"path": "a.py", "line": 3, "body": first[0]["body"]}]
-    # Next round: the same defect, now one line lower after a push above it.
-    again, skipped = plan_inline([_confirmed(line=4)], FILES, existing)
+def _patch_with(lines: dict, length: int = 25) -> list[dict]:
+    """One all-new a.py whose line n holds lines[n], or filler."""
+    body = [f"+{lines.get(n, f'filler {n}')}" for n in range(1, length + 1)]
+    return [{"filename": "a.py",
+             "patch": "\n".join([f"@@ -0,0 +1,{length} @@", *body])}]
+
+
+def test_a_moved_issue_is_not_posted_again():
+    first, _ = plan_inline([_confirmed(line=3)], _patch_with({3: "return n - 1"}), [])
+    # A push above it: the same code, and the same defect, now on line 9.
+    again, skipped = plan_inline([_confirmed(line=9)],
+                                 _patch_with({9: "return  n - 1"}), first)
     assert again == [] and skipped["already_posted"] == 1
+
+
+def test_a_new_issue_near_a_moved_one_with_the_same_title_is_posted():
+    """Found by this PR's third review: counting handed the old comment to
+    whichever same-titled issue came first — the new one — and re-posted the
+    old one. The code on the line tells them apart."""
+    first, _ = plan_inline([_confirmed(line=3)], _patch_with({3: "return n - 1"}), [])
+    after = _patch_with({4: "return m - 1", 21: "return n - 1"})
+    comments, skipped = plan_inline([_confirmed(line=4), _confirmed(line=21)],
+                                    after, first)
+    assert [c["line"] for c in comments] == [4]
+    assert skipped["already_posted"] == 1
+
+
+def test_a_comment_from_before_digests_still_absorbs_a_moved_issue():
+    legacy = [{"path": "a.py", "line": 3,
+               "body": f"x <!-- harness-code:{issue_key(_issue())} -->"}]
+    comments, skipped = plan_inline([_confirmed(line=4)], FILES, legacy)
+    assert comments == [] and skipped["already_posted"] == 1
 
 
 def test_plan_inline_skips_a_line_it_already_commented_on():
@@ -245,15 +272,6 @@ def test_a_new_issue_above_an_old_one_with_the_same_title_is_posted():
     comments, skipped = plan_inline([_confirmed(line=3), _confirmed(line=21)],
                                     FILES, first)
     assert [c["line"] for c in comments] == [3]
-    assert skipped["already_posted"] == 1
-
-
-def test_a_moved_issue_absorbs_its_old_comment_only_once():
-    first, _ = plan_inline([_confirmed(line=3)], FILES, [])
-    # One push later: the old issue moved to line 4, and a new one is at 21.
-    comments, skipped = plan_inline([_confirmed(line=4), _confirmed(line=21)],
-                                    FILES, first)
-    assert [c["line"] for c in comments] == [21]
     assert skipped["already_posted"] == 1
 
 
@@ -343,3 +361,11 @@ def test_patchless_files_make_the_code_verdict_partial():
                                           "patchless_files": ["big.py"]}}
     assert code_verdict(findings) == "CLEAN"
     assert code_verdict_label(findings) == "Code: no issues found (partial)"
+
+
+def test_a_deletion_too_large_to_diff_is_patchless():
+    """Codex review on #27: removing code can break its callers, so a
+    deletion GitHub would not diff is not reviewed either."""
+    assert code_review.is_patchless({"filename": "old.py", "status": "removed",
+                                     "additions": 0, "deletions": 12000,
+                                     "patch": ""})

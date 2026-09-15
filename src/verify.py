@@ -199,18 +199,21 @@ Requirements:
 {SECURITY_BLOCK}{_write_instruction(out_name, IMPACT_SCHEMA)}"""
 
 
-def _code_tasks(snapshot: dict) -> list[dict]:
+def _code_tasks(snapshot: dict, input_dir: str = "") -> list[dict]:
     """One code agent per shard of changed files, each with its diff as input.
 
     The diff goes into the workspace as a file rather than into the prompt: a
     large PR's patch would crowd out the instructions, and the agent can page
-    through a file with the same Read tool it uses on the code.
+    through a file with the same Read tool it uses on the code. run_verify
+    passes a freshly created directory for it (see there).
     """
     shards = code_review.shard_files(snapshot.get("files") or [])
     tasks = []
     for idx, files in enumerate(shards, start=1):
         name = f"code-{idx}" if len(shards) > 1 else "code"
-        out, diff = f"findings-{name}.json", f"review-diff-{name}.patch"
+        out = f"findings-{name}.json"
+        diff = f"{input_dir}/review-diff-{name}.patch" if input_dir \
+            else f"review-diff-{name}.patch"
         tasks.append({
             "name": name, "axis": "code", "out": out,
             "keys": ("code", "unresolved_questions"),
@@ -226,7 +229,8 @@ def _code_tasks(snapshot: dict) -> list[dict]:
 
 
 def plan_tasks(snapshot: dict, claims: list[dict],
-               doc_candidates: list[dict], code: bool = True) -> list[dict]:
+               doc_candidates: list[dict], code: bool = True,
+               input_dir: str = "") -> list[dict]:
     """The agents this review needs, each with its own prompt and output file."""
     tasks = []
     shards = [claims[i:i + CLAIMS_SHARD_SIZE]
@@ -252,7 +256,7 @@ def plan_tasks(snapshot: dict, claims: list[dict],
         "prompt": build_impact_prompt(snapshot, claims, "findings-impact.json"),
     })
     if code:
-        tasks += _code_tasks(snapshot)
+        tasks += _code_tasks(snapshot, input_dir)
     return tasks
 
 
@@ -414,6 +418,24 @@ def _write_input(path: Path, content: str) -> None:
         f.write(content)
 
 
+def _fresh_input_dir(workspace: Path) -> str:
+    """A new directory for this review's input files, one the PR cannot name.
+
+    Any fixed name can be pre-empted by the PR being reviewed: a symlink there
+    redirects the write out of the workspace, a directory there aborts the
+    review. mkdtemp's random name cannot be. Earlier rounds' directories are
+    cleared first — real directories only; anything else matching the pattern
+    is the PR's, and is neither followed nor removed.
+    """
+    import shutil
+    import tempfile
+
+    for old in workspace.glob(".harness-review-*"):
+        if old.is_dir() and not old.is_symlink():
+            shutil.rmtree(old, ignore_errors=True)
+    return Path(tempfile.mkdtemp(prefix=".harness-review-", dir=workspace)).name
+
+
 def run_verify(cfg: dict, workspace: Path, session_dir: Path, snapshot: dict,
                claims: list[dict], runner=None) -> dict:
     """Fan out one agent per axis, merge the parts, validate and return findings."""
@@ -421,7 +443,8 @@ def run_verify(cfg: dict, workspace: Path, session_dir: Path, snapshot: dict,
     session_dir.mkdir(parents=True, exist_ok=True)
     doc_candidates = rank_docs(workspace, snapshot, claims)
     tasks = plan_tasks(snapshot, claims, doc_candidates,
-                       code=cfg.get("code_review", True))
+                       code=cfg.get("code_review", True),
+                       input_dir=_fresh_input_dir(workspace))
 
     # A part file left by the previous round would be read as this round's
     # result if its agent fails — re-review must start from nothing.
@@ -469,7 +492,10 @@ def run_verify(cfg: dict, workspace: Path, session_dir: Path, snapshot: dict,
 CODE_VERIFY_BATCH = 10
 
 
-def _code_verify_tasks(snapshot: dict, issues: list[dict]) -> list[dict]:
+def _code_verify_tasks(snapshot: dict, issues: list[dict],
+                       diff_files: list[str]) -> list[dict]:
+    """Verify agents, one per batch. Each gets the diff, not just the head:
+    whether the change caused a defect cannot be told from the head alone."""
     batches = [issues[i:i + CODE_VERIFY_BATCH]
                for i in range(0, len(issues), CODE_VERIFY_BATCH)]
     tasks = []
@@ -480,7 +506,7 @@ def _code_verify_tasks(snapshot: dict, issues: list[dict]) -> list[dict]:
             "name": name, "axis": "code-verify", "out": out,
             "keys": ("verdicts",), "issues": batch,
             "prompt": code_review.build_verify_prompt(
-                _pr_context(snapshot), batch, SECURITY_BLOCK,
+                _pr_context(snapshot), batch, diff_files, SECURITY_BLOCK,
                 _write_instruction(out, code_review.VERDICTS_SCHEMA)),
         })
     return tasks
@@ -510,7 +536,9 @@ def _finish_code_axis(cfg: dict, workspace: Path, session_dir: Path,
     verdicts = None
     to_check = code_review.needs_verification(issues)
     if to_check:
-        tasks = _code_verify_tasks(snapshot, to_check)
+        diff_files = [name for task, _, _ in results if task["axis"] == "code"
+                      for name in task.get("inputs", {})]
+        tasks = _code_verify_tasks(snapshot, to_check, diff_files)
         for task in tasks:
             (workspace / task["out"]).unlink(missing_ok=True)
         with ThreadPoolExecutor(max_workers=len(tasks)) as pool:
@@ -525,7 +553,11 @@ def _finish_code_axis(cfg: dict, workspace: Path, session_dir: Path,
                     f"Review gap: the {task['name']} agent failed ({error}) — "
                     f"{n} blocker/major code issue{'' if n == 1 else 's'} unconfirmed.")
             else:
-                verdicts.extend(part["verdicts"])
+                # A verifier speaks only for the issues it was given: a verdict
+                # on another batch's id would override that batch's answer.
+                mine = {i["id"] for i in task["issues"]}
+                verdicts.extend(v for v in part["verdicts"]
+                                if isinstance(v, dict) and v.get("id") in mine)
         meta["verify"] = ("failed" if failed == len(tasks)
                           else "partial" if failed else "ok")
     kept, rejected = code_review.apply_verdicts(issues, verdicts)

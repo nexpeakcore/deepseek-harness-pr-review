@@ -39,8 +39,15 @@ descriptions and statements the agent could not check. PR #26 reported
    one agent per batch, in parallel: a single verifier for every shard's
    issues has no ceiling and runs out of budget partway down a long list. A
    batch that dies leaves only its own issues unconfirmed (`code_meta.verify`
-   = `partial`). Verification runs only when there is something to check, so
-   a clean PR pays nothing extra.
+   = `partial`), and a verdict a batch returns for an id it was not given is
+   dropped. Verification runs only when there is something to check, so a
+   clean PR pays nothing extra.
+
+   A verifier reads the diff files, not just the head: a scenario that happens
+   at the head is not enough. CONFIRMED means the change caused it — it
+   introduced the code, or made unchanged code newly reachable or newly wrong.
+   A real defect that predates the PR is REJECTED; it is not this PR's, and
+   is not posted on this PR's lines.
 
    Rejected issues move to `findings.json:code_rejected` with the reason —
    kept, not deleted, so the tool's precision can be measured later. An id the
@@ -108,17 +115,22 @@ Not posted inline, but kept in the report:
   `commentable_lines()` computes the accepted set from the patch.
 - Issues already posted. Each comment carries
   `<!-- harness-code:<key> -->`, key = hash of file + category + normalized
-  title — not the line, which moves when anything above it changes. A new
-  round skips an issue on a line this tool already commented on; each earlier
-  comment of the same key that no current issue sits on stands for one issue
-  whose line moved, and absorbs exactly one. So the same pattern at two lines
-  posts twice, a moved issue is not posted again, and a new issue above an old
-  one with the same title is still posted.
+  title — not the line, which moves when anything above it changes — plus a
+  digest of the code on the flagged line: `<!-- harness-code:<key>:<digest> -->`.
+  A new round skips an issue on a line this tool already commented on, and an
+  issue whose key and line-code digest match an earlier comment: the defect
+  moved, and its code moved with it. So the same pattern at two lines posts
+  twice, a moved issue is not posted again, and a new same-titled issue next
+  to a moved one is still posted. Pairing by position, then by count, both got
+  that last case wrong. Comments from before the digest carry the key alone and
+  each absorbs one moved issue by count.
 
-The diff files the code agents read are written into the PR's own checkout,
-where the PR could have committed a symlink at the same name. They are created
-with `O_EXCL | O_NOFOLLOW` after removing whatever is there, so the write can
-never leave the workspace. `normalize_issues()` drops an issue with no
+The diff files the code agents read live in the PR's own checkout, where the
+PR could commit a symlink — or a directory — at any name it can predict. So
+they go into a directory created fresh for every review (`mkdtemp`,
+`.harness-review-<random>`), which the PR cannot name in advance, and are
+created with `O_EXCL | O_NOFOLLOW` besides. The previous round's directory is
+cleared at the start of the next. `normalize_issues()` drops an issue with no
 scenario, so the rule holds even when a model ignores the prompt.
 
 GitHub sends no patch for a text file whose diff is too large. The head
