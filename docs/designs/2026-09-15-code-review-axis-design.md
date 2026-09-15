@@ -61,7 +61,9 @@ descriptions and statements the agent could not check. PR #26 reported
           "category": "correctness", "title": "...", "scenario": "...",
           "evidence": ["a.py:42"], "verified": true}],
 "code_rejected": [{"...": "...", "reason": "guarded by the caller"}],
-"code_meta": {"shards": 1, "failed_shards": 0, "verify": "ok|failed|skipped"}
+"code_meta": {"shards": 1, "failed_shards": 0,
+              "verify": "ok|partial|failed|skipped",
+              "patchless_files": ["files GitHub sent no diff for"]}
 ```
 
 `code` is optional. A session from before this axis, or run with

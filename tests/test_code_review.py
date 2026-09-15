@@ -480,3 +480,17 @@ def test_two_defects_of_one_category_on_one_line_both_post_in_a_round():
               _confirmed(line=3, title="divides by zero on empty input")]
     comments, skipped = plan_inline(issues, FILES, [])
     assert len(comments) == 2 and skipped["already_posted"] == 0
+
+
+def test_a_moved_issue_keeps_its_comment_when_another_takes_its_old_line():
+    """Found by this PR's eleventh review: a different same-category defect
+    landing on the moved issue's old line was counted as that comment's owner,
+    so the moved issue — already commented on — was posted a second time."""
+    first, _ = plan_inline([_confirmed(line=3)], _patch_with({3: "return n - 1"}), [])
+    after = _patch_with({3: "total = a / b", 21: "return n - 1"})
+    comments, skipped = plan_inline(
+        [_confirmed(line=21),                                   # moved, same code
+         _confirmed(line=3, title="divides by zero")],          # new, old line
+        after, first)
+    assert 21 not in [c["line"] for c in comments]              # no duplicate
+    assert skipped["already_posted"] >= 1

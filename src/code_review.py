@@ -478,17 +478,19 @@ def plan_inline(issues: list[dict], files: list[dict],
             skipped["outside_diff"] += 1
             continue
         eligible.append(issue)
-    current = {}
+    keys_at = {}
     for i in eligible:
-        current.setdefault((i["file"], i["line"]), set()).add(i["category"])
-    # A comment still on a line holding an issue of its category belongs to
-    # that issue, and must not also be claimed by a moved one.
+        keys_at.setdefault((i["file"], i["line"]), set()).add(issue_key(i))
+    # A comment still on a line holding the same issue belongs to that issue,
+    # and must not also be claimed by a moved one. Same issue means same key:
+    # a different defect that merely shares the category does not own it —
+    # counting it as the owner used the comment up, and the defect that had
+    # really moved away was posted a second time.
     for spot, marks in at_spot.items():
-        cats = current.get(spot)
-        for key, anchor, category in marks:
-            if anchor and cats and (category is None or category in cats):
+        for key, anchor, _ in marks:
+            if anchor and key in keys_at.get(spot, ()):
                 anchored[key, anchor] -= 1
-    legacy_moved = {key: len(spots - set(current)) for key, spots in legacy.items()}
+    legacy_moved = {key: len(spots - set(keys_at)) for key, spots in legacy.items()}
     # None stands for a marker from before categories: it claims the line.
     claimed = {spot: {cat for _, _, cat in marks} for spot, marks in at_spot.items()}
     # Within this round only an identical issue is folded: two issues the
