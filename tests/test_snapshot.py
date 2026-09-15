@@ -252,3 +252,19 @@ def test_normalize_files_keeps_the_blob_sha():
     from src.snapshot import normalize_files
 
     assert normalize_files([{"filename": "a", "sha": "deadbeef"}])[0]["sha"] == "deadbeef"
+
+
+def test_diff_fingerprint_reacts_to_a_different_rename_source():
+    """Codex review on #27: a force-push renaming a different file into the
+    same path, identical contents, is a real change the poller must not skip —
+    while files that were not renamed keep the fingerprint they had."""
+    from src.snapshot import diff_fingerprint, normalize_files
+
+    base = {"filename": "new.py", "status": "renamed", "sha": "same", "patch": ""}
+    a = [{**base, "previous_filename": "old_a.py"}]
+    b = [{**base, "previous_filename": "old_b.py"}]
+    assert diff_fingerprint(a) != diff_fingerprint(b)
+    plain = {"filename": "x.py", "status": "modified", "sha": "s", "patch": "p"}
+    assert diff_fingerprint([plain]) == diff_fingerprint(normalize_files([plain]))
+    assert normalize_files([{"filename": "n", "previous_filename": "o"}])[0][
+        "previous_filename"] == "o"

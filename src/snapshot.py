@@ -143,6 +143,12 @@ def diff_fingerprint(files: list[dict]) -> str:
         for field in ("filename", "status", "sha", "patch"):
             digest.update((f.get(field) or "").encode())
             digest.update(b"\0")
+        # A rename's source is part of the diff: a force-push that renames a
+        # different file into the same path, identical contents, is a real
+        # change. Hashed only when present — an empty field hashed for every
+        # file would move every PR's fingerprint and re-review them all once.
+        if f.get("previous_filename"):
+            digest.update(b"renamed-from\0" + f["previous_filename"].encode() + b"\0")
     return digest.hexdigest()
 
 
