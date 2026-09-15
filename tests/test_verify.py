@@ -505,6 +505,20 @@ def test_code_verify_is_batched_and_a_dead_batch_only_costs_its_own(tmp_path,
                for q in findings["unresolved_questions"])
 
 
+def test_review_input_never_follows_a_symlink_the_pr_committed(tmp_path):
+    """The workspace is the PR's tree; a link at our file name must not be
+    a way to write outside it."""
+    ws, sd = _dirs(tmp_path)
+    target = tmp_path / "outside.txt"
+    target.write_text("precious")
+    (ws / "review-diff-code.patch").symlink_to(target)
+    run_verify({"model": "m"}, ws, sd, SNAP, _claims(1),
+               runner=_fake_runner(PAYLOADS))
+    assert target.read_text() == "precious"
+    assert not (ws / "review-diff-code.patch").is_symlink()
+    assert "=== a.py" in (ws / "review-diff-code.patch").read_text()
+
+
 # --- agent backend selection ------------------------------------------------
 
 def test_select_runner_defaults_to_the_sdk_backend():

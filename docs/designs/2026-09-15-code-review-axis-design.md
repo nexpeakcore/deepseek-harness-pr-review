@@ -108,11 +108,18 @@ Not posted inline, but kept in the report:
   `commentable_lines()` computes the accepted set from the patch.
 - Issues already posted. Each comment carries
   `<!-- harness-code:<key> -->`, key = hash of file + category + normalized
-  title — not the line, which moves when anything above it changes. The same
-  pattern flagged at two lines is two defects, so the second and later
-  occurrences (counted top to bottom) add their ordinal to the hash; the first
-  keeps the bare key. A new round skips a key already present, and any line
-  this tool already commented on.
+  title — not the line, which moves when anything above it changes. A new
+  round skips an issue on a line this tool already commented on; each earlier
+  comment of the same key that no current issue sits on stands for one issue
+  whose line moved, and absorbs exactly one. So the same pattern at two lines
+  posts twice, a moved issue is not posted again, and a new issue above an old
+  one with the same title is still posted.
+
+The diff files the code agents read are written into the PR's own checkout,
+where the PR could have committed a symlink at the same name. They are created
+with `O_EXCL | O_NOFOLLOW` after removing whatever is there, so the write can
+never leave the workspace. `normalize_issues()` drops an issue with no
+scenario, so the rule holds even when a model ignores the prompt.
 
 Posting never fails the review: an error is a warning in the log, like the
 round ping.

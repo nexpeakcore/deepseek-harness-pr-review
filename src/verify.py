@@ -390,6 +390,28 @@ def _execute(cfg: dict, workspace: Path, session_dir: Path, task: dict,
         return task, None, str(e)
 
 
+def _write_input(path: Path, content: str) -> None:
+    """Write a file into the PR's checkout without following what the PR put there.
+
+    The workspace is the PR's own tree, so a PR can commit a symlink at the
+    very name written here — review-diff-code.patch -> ~/.ssh/authorized_keys
+    — and a plain write_text would follow it out of the workspace. Whatever is
+    there is removed first (unlink drops a link, never its target), and the
+    file is created exclusively without following a link.
+    """
+    import os
+
+    if path.is_symlink() or path.is_file():
+        path.unlink()
+    elif path.exists():
+        raise RuntimeError(f"cannot write review input {path.name}: "
+                           f"the PR has a directory at that path")
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL
+                 | getattr(os, "O_NOFOLLOW", 0), 0o644)
+    with os.fdopen(fd, "w") as f:
+        f.write(content)
+
+
 def run_verify(cfg: dict, workspace: Path, session_dir: Path, snapshot: dict,
                claims: list[dict], runner=None) -> dict:
     """Fan out one agent per axis, merge the parts, validate and return findings."""
@@ -404,7 +426,7 @@ def run_verify(cfg: dict, workspace: Path, session_dir: Path, snapshot: dict,
     for task in tasks:
         (workspace / task["out"]).unlink(missing_ok=True)
         for name, content in task.get("inputs", {}).items():
-            (workspace / name).write_text(content)
+            _write_input(workspace / name, content)
 
     print(f"      {len(tasks)} agents on {backend_label(cfg)}: "
           f"{', '.join(t['name'] for t in tasks)}"

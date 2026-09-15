@@ -227,20 +227,51 @@ def test_plan_inline_dedupes_within_one_round():
     assert len(comments) == 1 and skipped["already_posted"] == 1
 
 
-def _key_of(comment):
-    return code_review.INLINE_MARKER_RE.search(comment["body"]).group(1)
-
-
 def test_plan_inline_posts_the_same_pattern_at_two_lines():
     """Same file, category and title at two lines is two defects, not one."""
     comments, _ = plan_inline([_confirmed(line=21), _confirmed(line=3)], FILES, [])
     assert [c["line"] for c in comments] == [3, 21]
-    assert {_key_of(c) for c in comments} == {issue_key(_issue()),       # bare
-                                              issue_key(_issue(), 1)}
     # Next round: both already posted, neither goes up again.
-    again, skipped = plan_inline([_confirmed(line=3), _confirmed(line=21)], FILES,
-                                 [{**c, "path": c["path"]} for c in comments])
+    again, skipped = plan_inline([_confirmed(line=3), _confirmed(line=21)],
+                                 FILES, comments)
     assert again == [] and skipped["already_posted"] == 2
+
+
+def test_a_new_issue_above_an_old_one_with_the_same_title_is_posted():
+    """Found by this PR's own second review: numbering repeats by position
+    handed the old comment's key to the new issue above it, which was then
+    skipped as already posted."""
+    first, _ = plan_inline([_confirmed(line=21)], FILES, [])
+    comments, skipped = plan_inline([_confirmed(line=3), _confirmed(line=21)],
+                                    FILES, first)
+    assert [c["line"] for c in comments] == [3]
+    assert skipped["already_posted"] == 1
+
+
+def test_a_moved_issue_absorbs_its_old_comment_only_once():
+    first, _ = plan_inline([_confirmed(line=3)], FILES, [])
+    # One push later: the old issue moved to line 4, and a new one is at 21.
+    comments, skipped = plan_inline([_confirmed(line=4), _confirmed(line=21)],
+                                    FILES, first)
+    assert [c["line"] for c in comments] == [21]
+    assert skipped["already_posted"] == 1
+
+
+def test_normalize_issues_takes_an_evidence_string_as_one_reference():
+    [issue] = normalize_issues([_issue(evidence="a.py:42")])
+    assert issue["evidence"] == ["a.py:42"]
+
+
+def test_normalize_issues_survives_junk_evidence():
+    """A malformed field must not cost the whole review a TypeError."""
+    [issue] = normalize_issues([_issue(evidence=7)])
+    assert issue["evidence"] == []
+
+
+def test_an_issue_without_a_scenario_is_dropped():
+    """No scenario, no issue — enforced here, not only asked of the model."""
+    assert normalize_issues([_issue(scenario=""), _issue(scenario=None),
+                             _issue(scenario="   ")]) == []
 
 
 class _FakeGh:
