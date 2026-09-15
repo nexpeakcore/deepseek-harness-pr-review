@@ -58,7 +58,7 @@ def test_plan_reviews_skips_drafts(tmp_path):
         {"number": 1, "head": {"sha": "a"}, "draft": True},
         {"number": 2, "head": {"sha": "b"}, "draft": False},
     ]
-    plans = plan_reviews(root, "o", "r", prs, drafts=False)
+    plans = plan_reviews(root, "o", "r", prs, drafts=False, fetch_files=None)
     assert plans == [{"pr": 2, "head_sha": "b", "decision": "NEW"}]
 
 
@@ -74,7 +74,7 @@ def test_plan_reviews_statuses(tmp_path):
         {"number": 2, "head": {"sha": "c"}, "draft": False},   # NEW
         {"number": 3, "head": {"sha": "b"}, "draft": False},   # RE-RUN
     ]
-    plans = plan_reviews(root, "o", "r", prs, drafts=False)
+    plans = plan_reviews(root, "o", "r", prs, drafts=False, fetch_files=None)
     assert plans == [
         {"pr": 1, "head_sha": "a", "decision": "SKIP"},
         {"pr": 2, "head_sha": "c", "decision": "NEW"},
@@ -539,3 +539,99 @@ def test_autoreview_rejects_an_unknown_provider(tmp_path, monkeypatch, capsys):
 
     assert main(["--once", "--config", str(cfg)]) == 2
     assert "unknown HARNESS_PROVIDER" in capsys.readouterr().err
+
+
+# --- a head that moved without the diff moving -------------------------------
+
+FILES = [{"filename": "app/rbac.py", "status": "modified", "additions": 3,
+          "deletions": 1, "patch": "@@ -1,2 +1,4 @@\n ctx\n+granted = True"}]
+SNAPSHOT_WITH_DIFF = {**SNAPSHOT, "head_sha": "abc", "files": FILES}
+
+
+def _reviewed(root, n=5, snapshot=None):
+    """A session holding a finished review."""
+    _write_session(root, "o", "r", n, snapshot=snapshot or SNAPSHOT_WITH_DIFF)
+    d = root / "o" / "r" / f"pr-{n}"
+    (d / "findings.json").write_text(json.dumps(EMPTY_FINDINGS))
+    return d
+
+
+def test_decide_pr_skips_a_head_that_carries_the_same_diff(tmp_path):
+    """A rebase, a merge of the base, an amended message, an empty commit.
+
+    PR #944 collected 57 rounds and 57 ping comments this way — one per push,
+    for a diff that had not moved.
+    """
+    root = tmp_path / "sessions"
+    _reviewed(root)
+
+    assert decide_pr(root, "o", "r", 5, "rebased-sha",
+                     fetch_files=lambda *a: FILES) == "SKIP-NO-CHANGE"
+
+
+def test_decide_pr_reviews_a_head_that_changed_the_diff(tmp_path):
+    root = tmp_path / "sessions"
+    _reviewed(root)
+    changed = [{**FILES[0], "patch": "@@ -1,2 +1,4 @@\n ctx\n+granted = False"}]
+
+    assert decide_pr(root, "o", "r", 5, "real-change",
+                     fetch_files=lambda *a: changed) == "RE-RUN"
+
+
+def test_decide_pr_asks_about_a_head_only_once(tmp_path):
+    """Every poll is 2 minutes apart; the answer must not cost a call each time."""
+    root = tmp_path / "sessions"
+    _reviewed(root)
+    calls = []
+
+    def fetch(*a):
+        calls.append(a)
+        return FILES
+
+    assert decide_pr(root, "o", "r", 5, "rebased", fetch_files=fetch) == "SKIP-NO-CHANGE"
+    assert decide_pr(root, "o", "r", 5, "rebased", fetch_files=fetch) == "SKIP-NO-CHANGE"
+    assert len(calls) == 1
+
+
+def test_decide_pr_never_skips_a_review_that_never_finished(tmp_path):
+    """Otherwise a PR whose review died, then got rebased, is skipped forever."""
+    import os
+
+    root = tmp_path / "sessions"
+    d = _reviewed(root)
+    # findings older than the snapshot → the last review fetched a head and died
+    snap = (d / "snapshot.json").stat().st_mtime
+    os.utime(d / "findings.json", (snap - 60, snap - 60))
+
+    assert decide_pr(root, "o", "r", 5, "rebased",
+                     fetch_files=lambda *a: FILES) == "RE-RUN"
+
+
+def test_decide_pr_reviews_when_it_cannot_see_the_new_diff(tmp_path):
+    """With no way to look, a moved head is a change worth reviewing."""
+    root = tmp_path / "sessions"
+    _reviewed(root)
+
+    assert decide_pr(root, "o", "r", 5, "moved", fetch_files=None) == "RE-RUN"
+
+    def boom(*a):
+        raise RuntimeError("gh api failed")
+
+    assert decide_pr(root, "o", "r", 5, "moved", fetch_files=boom) == "RE-RUN"
+
+
+def test_seen_heads_expire_when_the_diff_moves_on(tmp_path):
+    """A head recorded against an old diff must not skip a PR that changed."""
+    root = tmp_path / "sessions"
+    d = _reviewed(root)
+    decide_pr(root, "o", "r", 5, "rebased", fetch_files=lambda *a: FILES)
+    assert (d / "same-diff-heads.json").exists()
+
+    # A real change lands and is reviewed: the snapshot now holds a new diff.
+    newer = [{**FILES[0], "patch": "@@ -9,1 +9,1 @@\n-old\n+new"}]
+    (d / "snapshot.json").write_text(
+        json.dumps({**SNAPSHOT_WITH_DIFF, "head_sha": "second", "files": newer}))
+    (d / "findings.json").write_text(json.dumps(EMPTY_FINDINGS))
+
+    assert decide_pr(root, "o", "r", 5, "rebased",
+                     fetch_files=lambda *a: FILES) == "RE-RUN"

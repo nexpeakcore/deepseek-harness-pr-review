@@ -66,8 +66,9 @@ plus one comment on the PR.</p>
 
 <h2>Step 3 — Automate: review every new PR</h2>
 <p>Enable auto review for a repo and the poller handles everything — new PRs
-are reviewed automatically, and PRs are re-reviewed when the head commit
-changes:</p>
+are reviewed automatically, and PRs are re-reviewed when their <em>diff</em>
+changes. A head that moved without changing the diff — a rebase, a merge of the
+base branch, an amended commit message — is skipped:</p>
 <pre><code># autoreview.yml
 org: your-org
 repos:

@@ -51,7 +51,7 @@ and live demo data are included — see [Web dashboard](#web-dashboard).
 | ✅ **Parallel agents** | One agent per review axis (claims / docs / impact), claims sharded past 15 — so a 40-claim PR cannot starve the docs check. Concurrency is capped globally across every review process |
 | ✅ **Ranked doc targets** | Docs are scored against the diff (path proximity, changed symbols, file mentions) before any agent runs — the agent verifies a bounded, reproducible list instead of grepping the repo |
 | ✅ **Repo config that stays true** | Adding a repo verifies it exists and is visible to your token first, so a typo cannot become a permanent config entry. `autoreview --check-repos` (and the /config page) flags entries GitHub can no longer reach and removes them in one click |
-| ✅ **Auto review poller** | Reviews new PRs automatically, re-reviews when the head commit changes |
+| ✅ **Auto review poller** | Reviews new PRs automatically, and re-reviews when the *diff* changes — not merely when the head SHA does. A rebase, a merge of the base branch, an amended message or an empty commit moves the head without changing a line, and each one used to cost a full agent fan-out and a fresh notification saying exactly what the last round said |
 | ✅ **Web dashboard** | Repo config management, review triggers (Review now), live review logs, metrics: risks found, doc errors, verdicts, review rounds per repo |
 | ✅ **Idempotent PR comments** | One English comment per PR, updated in place — never duplicated |
 | ✅ **Traceable** | Every phase writes structured JSON to `sessions/` |
@@ -254,7 +254,7 @@ a CONTRADICTED verdict + FABRICATED doc), useful for screenshots and documentati
 
 ## Auto review
 
-Poll GitHub for new PRs (and head-SHA changes) and review them automatically in
+Poll GitHub for new PRs (and changes to their diff) and review them automatically in
 batch mode. Each repo is configured `auto` (poller reviews its PRs) or `manual`
 (poller skips it; review via CLI). Edit `autoreview.yml` directly, via CLI, or
 from the web dashboard (Config page → toggle Auto/Manual).
@@ -324,8 +324,22 @@ cp com.nexpeak.pr-review.plist ~/Library/LaunchAgents/
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.nexpeak.pr-review.plist
 ```
 
-Re-review rules: head SHA in the PR changed vs the last snapshot → all phases
+Re-review rules: the PR's **diff** changed vs the last snapshot → all phases
 re-run with `--force`; the PR comment is updated in place (never duplicated).
+A head that moved without changing the diff — a rebase, a merge of the base
+branch, an amended message, an empty commit — is logged as `SKIP-NO-CHANGE`
+and costs nothing. A PR whose last review never finished is always re-run,
+however unchanged its diff looks.
+
+Two consequences worth knowing:
+
+- The report's `Review complete … commit <sha>` line names the commit that was
+  actually reviewed. After a `SKIP-NO-CHANGE` the PR's head has moved past it,
+  so the SHA can trail the branch by design — the diff it reviewed is still the
+  diff the PR has.
+- Sessions reviewed before the diff-based rule shipped fingerprint differently
+  from a fresh fetch, so each open PR gets one extra review the first time the
+  poller sees it, and then settles.
 
 ## Configuration
 

@@ -17,6 +17,7 @@ from src.autoreview_config import auto_repos, list_repos, load_config, \
 from src.config import PROVIDERS
 from src.config import load_config as load_env_config
 from src.gh import gh_available, run_gh
+from src.snapshot import diff_fingerprint, fetch_files as fetch_pr_files
 from src.review_proc import review_lock_alive
 
 CONFIG_PATH = Path("autoreview.yml")
@@ -28,9 +29,64 @@ _repo_failures: dict[str, int] = {}
 _REPO_FAILURE_LIMIT = 3
 
 
+SEEN_HEADS = "same-diff-heads.json"
+
+
+def _seen_heads(session_dir: Path, fingerprint: str) -> set:
+    """Heads already confirmed to carry the reviewed diff, for this diff only.
+
+    The fingerprint is stored alongside so the list expires by itself: once a
+    real change lands and is reviewed, the recorded heads belong to a diff that
+    no longer exists and are ignored rather than skipping a PR that moved on.
+    """
+    try:
+        data = json.loads((session_dir / SEEN_HEADS).read_text())
+    except (json.JSONDecodeError, OSError):
+        return set()
+    if data.get("fingerprint") != fingerprint:
+        return set()
+    return set(data.get("heads") or [])
+
+
+def _record_seen_head(session_dir: Path, fingerprint: str, head_sha: str,
+                      heads: set) -> None:
+    """Remember a head whose diff matched, so the next poll costs no API call."""
+    try:
+        (session_dir / SEEN_HEADS).write_text(json.dumps(
+            {"fingerprint": fingerprint, "heads": sorted(heads | {head_sha})},
+            indent=2))
+    except OSError:
+        pass  # a review we skipped is not worth failing the pass over
+
+
+def _review_complete(session_dir: Path, snapshot_path: Path) -> bool:
+    """Did the last review get past verify, or die holding a fresh snapshot?
+
+    findings.json is written after the snapshot it was derived from, so a
+    snapshot newer than the findings means a review fetched a new head and
+    then failed before producing anything.
+    """
+    try:
+        return ((session_dir / "findings.json").stat().st_mtime
+                >= snapshot_path.stat().st_mtime)
+    except OSError:
+        return False
+
+
 def decide_pr(session_root: Path, owner: str, repo: str, n: int,
-              head_sha: str) -> str:
-    """Return NEW / RE-RUN / SKIP for one PR."""
+              head_sha: str, fetch_files=None) -> str:
+    """Return NEW / RE-RUN / SKIP / SKIP-NO-CHANGE for one PR.
+
+    SKIP-NO-CHANGE means the head moved but the diff did not: a rebase, a
+    merge of the base branch, an amended message, an empty commit. Re-reviewing
+    those costs a full agent fan-out and posts a fresh notification to every
+    subscriber to report exactly what the last round already said. PR #944
+    collected 57 rounds and 57 pings that way.
+
+    It is only returned when there is a finished review to stand on, and only
+    when `fetch_files` is given — with no way to look at the new diff, a moved
+    head is still assumed to be a change worth reviewing.
+    """
     session_dir = session_root / owner / repo / f"pr-{n}"
     snapshot_path = session_dir / "snapshot.json"
     if not snapshot_path.exists():
@@ -40,21 +96,47 @@ def decide_pr(session_root: Path, owner: str, repo: str, n: int,
     except (json.JSONDecodeError, OSError):
         return "RE-RUN"  # snapshot hỏng → chạy lại cho an toàn
     old_sha = snapshot.get("head_sha", "")
-    if old_sha and old_sha == head_sha:
-        # head khớp nhưng snapshot mới hơn findings (re-review fail giữa chừng
-        # sau khi fetch head mới) → review chưa hoàn thành → chạy lại
-        findings_path = session_dir / "findings.json"
-        try:
-            if snapshot_path.stat().st_mtime > findings_path.stat().st_mtime:
-                return "RE-RUN"
-        except OSError:
-            return "RE-RUN"  # thiếu findings → review dở dang
-        return "SKIP"
+    if not old_sha:
+        return "RE-RUN"
+
+    if old_sha == head_sha:
+        return "SKIP" if _review_complete(session_dir, snapshot_path) else "RE-RUN"
+
+    # The head moved. Whether that is worth a review depends on the diff, not
+    # on the SHA — but only once there is a finished review to compare against.
+    if not _review_complete(session_dir, snapshot_path):
+        return "RE-RUN"
+    reviewed = diff_fingerprint(snapshot.get("files") or [])
+    if head_sha in _seen_heads(session_dir, reviewed):
+        return "SKIP-NO-CHANGE"
+    if _same_diff(session_dir, owner, repo, n, head_sha, reviewed, fetch_files):
+        return "SKIP-NO-CHANGE"
     return "RE-RUN"
 
 
+def _same_diff(session_dir: Path, owner: str, repo: str, n: int,
+               head_sha: str, reviewed: str, fetch_files) -> bool:
+    """Does the moved head still carry the diff that was reviewed?
+
+    Costs one API call, and only for a PR whose head actually moved. The answer
+    is recorded, so the same head is never paid for twice.
+    """
+    if fetch_files is None:
+        return False
+    try:
+        current = diff_fingerprint(fetch_files(owner, repo, n))
+    except (RuntimeError, OSError, ValueError, KeyError, TypeError):
+        return False  # cannot tell → review it, the cheaper mistake of the two
+    if current != reviewed:
+        return False
+    _record_seen_head(session_dir, reviewed, head_sha,
+                      _seen_heads(session_dir, reviewed))
+    return True
+
+
 def plan_reviews(session_root: Path, owner: str, repo: str, prs: list[dict],
-                 drafts: bool = False, skip_bots: bool = True) -> list[dict]:
+                 drafts: bool = False, skip_bots: bool = True,
+                 fetch_files=fetch_pr_files) -> list[dict]:
     """Return [{pr, head_sha, decision}] for open PRs of one repo.
 
     Bot PRs (user.type == "Bot") are skipped by default — they are usually
@@ -70,7 +152,8 @@ def plan_reviews(session_root: Path, owner: str, repo: str, prs: list[dict],
             continue
         n = p["number"]
         head_sha = (p.get("head") or {}).get("sha", "")
-        decision = decide_pr(session_root, owner, repo, n, head_sha)
+        decision = decide_pr(session_root, owner, repo, n, head_sha,
+                             fetch_files=fetch_files)
         plans.append({"pr": n, "head_sha": head_sha, "decision": decision})
     return plans
 
@@ -202,6 +285,9 @@ def run_pass(cfg: dict, session_root: Path, dry_run: bool = False,
             line = f"{plan['decision']} {owner}/{repo}#{n}"
             if plan["decision"] == "SKIP":
                 print(line)
+                continue
+            if plan["decision"] == "SKIP-NO-CHANGE":
+                print(f"{line} (head {plan['head_sha'][:7]}, diff unchanged)")
                 continue
             if dry_run:
                 print(f"[dry-run] would review: {line}")
