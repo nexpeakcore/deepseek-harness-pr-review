@@ -317,3 +317,29 @@ def test_post_inline_review_skips_a_session_without_the_code_axis():
     gh = _FakeGh()
     assert post_inline_review("o", "r", 7, {"files": FILES}, {}, gh=gh)["posted"] == 0
     assert gh.calls == []
+
+
+# --- files GitHub would not diff -------------------------------------------
+
+BIG = {"filename": "big.py", "status": "modified", "additions": 9000,
+       "deletions": 10, "patch": ""}
+
+
+def test_a_text_file_github_would_not_diff_is_patchless():
+    assert code_review.is_patchless(BIG)
+    assert not code_review.is_patchless({"filename": "logo.png", "status": "modified",
+                                         "additions": 0, "deletions": 0, "patch": ""})
+    assert not code_review.is_patchless({"filename": "a.py", "status": "modified",
+                                         "additions": 1, "deletions": 0,
+                                         "patch": PATCH})
+    text = render_diff([BIG])
+    assert "too large" in text and "not reviewed" in text
+
+
+def test_patchless_files_make_the_code_verdict_partial():
+    """Codex review on #27: a shard whose only change was never visible must
+    not read as clean."""
+    findings = {"code": [], "code_meta": {"shards": 1, "failed_shards": 0,
+                                          "patchless_files": ["big.py"]}}
+    assert code_verdict(findings) == "CLEAN"
+    assert code_verdict_label(findings) == "Code: no issues found (partial)"

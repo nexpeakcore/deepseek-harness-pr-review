@@ -121,6 +121,11 @@ with `O_EXCL | O_NOFOLLOW` after removing whatever is there, so the write can
 never leave the workspace. `normalize_issues()` drops an issue with no
 scenario, so the rule holds even when a model ignores the prompt.
 
+GitHub sends no patch for a text file whose diff is too large. The head
+version alone does not say what changed, so such a file cannot be reviewed:
+it is listed in `code_meta.patchless_files`, named in the report as not
+reviewed, and makes the code verdict `(partial)` instead of clean.
+
 Posting never fails the review: an error is a warning in the log, like the
 round ping.
 

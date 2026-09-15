@@ -410,9 +410,26 @@ def test_run_verify_confirms_and_rejects_code_issues(tmp_path, capsys):
     assert findings["code"][1]["verified"] is None      # MINOR: never checked
     assert [i["id"] for i in findings["code_rejected"]] == ["K2"]
     assert findings["code_rejected"][0]["reason"] == "name is validated upstream"
-    assert findings["code_meta"] == {"shards": 1, "failed_shards": 0, "verify": "ok"}
+    assert findings["code_meta"] == {"shards": 1, "failed_shards": 0, "verify": "ok",
+                                     "patchless_files": []}
     assert (ws / "review-diff-code.patch").exists()
     assert "code-verify: 1 confirmed, 1 rejected" in capsys.readouterr().out
+
+
+def test_a_file_github_would_not_diff_is_recorded_not_reviewed(tmp_path):
+    from src.code_review import code_verdict_label
+
+    ws, sd = _dirs(tmp_path)
+    snap = {**SNAP, "files": [
+        {"filename": "big.py", "status": "modified", "additions": 9000,
+         "deletions": 3, "patch": ""},
+        {"filename": "logo.png", "status": "modified", "additions": 0,
+         "deletions": 0, "patch": ""}]}
+    payloads = {**PAYLOADS, "code": {"code": [], "unresolved_questions": []}}
+    findings = run_verify({"model": "m"}, ws, sd, snap, _claims(1),
+                          runner=_fake_runner(payloads))
+    assert findings["code_meta"]["patchless_files"] == ["big.py"]
+    assert code_verdict_label(findings) == "Code: no issues found (partial)"
 
 
 def test_code_verifier_only_sees_blocker_and_major(tmp_path):

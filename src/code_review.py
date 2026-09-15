@@ -93,6 +93,18 @@ def annotate_patch(patch: str) -> str:
     return "\n".join(out)
 
 
+def is_patchless(f: dict) -> bool:
+    """A text change GitHub sent without a patch, because the diff is too large.
+
+    Binary files come without a patch too, but with zero line counts. The head
+    version of a patchless text file does not say which lines changed, so no
+    agent can review the change — and a shard holding one must not read as
+    clean. These are recorded and make the code verdict partial.
+    """
+    return (not f.get("patch") and f.get("status") != "removed"
+            and (f.get("additions") or 0) + (f.get("deletions") or 0) > 0)
+
+
 def render_diff(files: list[dict]) -> str:
     """The diff an agent reads, one file after another, line-numbered."""
     parts = []
@@ -100,9 +112,13 @@ def render_diff(files: list[dict]) -> str:
         header = (f"=== {f.get('filename', '')} ({f.get('status', '')} "
                   f"+{f.get('additions', 0)}/-{f.get('deletions', 0)})")
         patch = f.get("patch") or ""
-        body = (annotate_patch(patch) if patch else
-                "(GitHub sent no patch — binary or too large. Read the file "
-                "itself if it is text.)")
+        if patch:
+            body = annotate_patch(patch)
+        elif is_patchless(f):
+            body = ("(GitHub sent no patch — the diff is too large. This file is "
+                    "recorded as not reviewed; do not report on it.)")
+        else:
+            body = "(GitHub sent no patch — a binary file, or no line changes.)"
         parts.append(f"{header}\n{body}")
     return "\n\n".join(parts) + "\n"
 
@@ -320,7 +336,8 @@ def code_verdict_label(findings: dict) -> str:
                  f"Code: no blocking issues ({c['minor']} minor)")
     else:
         label = "Code: " + " · ".join(parts)
-    if (findings.get("code_meta") or {}).get("failed_shards"):
+    meta = findings.get("code_meta") or {}
+    if meta.get("failed_shards") or meta.get("patchless_files"):
         label += " (partial)"
     return label
 

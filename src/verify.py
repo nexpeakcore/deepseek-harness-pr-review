@@ -215,6 +215,8 @@ def _code_tasks(snapshot: dict) -> list[dict]:
             "name": name, "axis": "code", "out": out,
             "keys": ("code", "unresolved_questions"),
             "inputs": {diff: code_review.render_diff(files)},
+            "patchless": [f["filename"] for f in files
+                          if code_review.is_patchless(f)],
             "prompt": code_review.build_code_prompt(
                 _pr_context(snapshot), diff, SECURITY_BLOCK,
                 _write_instruction(out, code_review.CODE_SCHEMA),
@@ -501,7 +503,10 @@ def _finish_code_axis(cfg: dict, workspace: Path, session_dir: Path,
         [i for part in code_parts if part for i in part["code"]])
     meta = {"shards": len(code_parts),
             "failed_shards": sum(1 for part in code_parts if part is None),
-            "verify": "skipped"}
+            "verify": "skipped",
+            "patchless_files": sorted(
+                name for task, _, _ in results if task["axis"] == "code"
+                for name in task.get("patchless", []))}
     verdicts = None
     to_check = code_review.needs_verification(issues)
     if to_check:

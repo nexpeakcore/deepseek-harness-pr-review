@@ -169,6 +169,10 @@ def _code_report_lines(findings: dict) -> list[str]:
         lines += [f"{len(rejected)} more reported issue"
                   f"{'' if len(rejected) == 1 else 's'} rejected by the verify "
                   f"agent and not shown.", ""]
+    patchless = (findings.get("code_meta") or {}).get("patchless_files") or []
+    if patchless:
+        lines += [f"Not reviewed — GitHub sent no diff (too large): "
+                  f"{', '.join(patchless)}", ""]
     return lines
 
 
