@@ -39,7 +39,9 @@
      href="https://github.com/{{ repo_owner }}/{{ repo_name }}/pull/{{ detail.pr.pr }}">Open on GitHub ↗</a></h1>
 <p class="muted">{{ detail.pr.author }} · {{ detail.pr.base }} → {{ detail.pr.head }}</p>
 <span class="verdict v-{{ detail.pr.verdict|lower }}">{{ detail.pr.verdict_label }}</span>
-<span class="verdict v-fail">Risks found: {{ detail.pr.bugs }}</span>
+<span class="verdict v-{{ detail.pr.code_verdict|lower }}">{{ detail.pr.code_label }}</span>
+<span class="verdict v-fail">Bugs: {{ detail.pr.bugs }}</span>
+<span class="verdict v-partial">Needs a look: {{ detail.pr.attention }}</span>
 <span class="verdict v-wrong">Doc errors: {{ detail.pr.doc_errors }}</span>
 {% if detail.pr.inferred %}
 <p class="muted breakdown">This PR has no usable description. The claims below
@@ -48,22 +50,60 @@
 {% endif %}
 <p class="muted breakdown">
   {% set b = detail.pr.bug_breakdown %}
-  Risks = {{ b.claims_fail }} FAIL claim{{ 's' if b.claims_fail != 1 }}
-  + {{ b.claims_partial }} PARTIAL claim{{ 's' if b.claims_partial != 1 }}
-  + {{ b.impact_broken }} BROKEN + {{ b.impact_risk }} RISK impact
+  Bugs = {{ b.code_blocker }} BLOCKER + {{ b.code_major }} MAJOR code issue{{ 's' if b.code_blocker + b.code_major != 1 }}
+  + {{ b.claims_fail }} FAIL claim{{ 's' if b.claims_fail != 1 }}
+  + {{ b.impact_broken }} BROKEN impact
+  {% set a = detail.pr.attention_breakdown %}
+  · Needs a look = {{ a.claims_partial }} PARTIAL claim{{ 's' if a.claims_partial != 1 }}
+  + {{ a.impact_risk }} RISK impact
   {% set d = detail.pr.doc_breakdown %}
   · Docs = {{ d.wrong }} WRONG + {{ d.fabricated }} FABRICATED + {{ d.stale }} STALE
 </p>
 
 <div class="tabs">
-  <button class="tab-btn active" onclick="showTab('tab-claims', this)">Claims ({{ detail.claims|length }})</button>
+  <button class="tab-btn active" onclick="showTab('tab-code', this)">Code ({{ detail.code|length }})</button>
+  <button class="tab-btn" onclick="showTab('tab-claims', this)">Claims ({{ detail.claims|length }})</button>
   <button class="tab-btn" onclick="showTab('tab-docs', this)">Docs ({{ detail.docs|length }})</button>
   <button class="tab-btn" onclick="showTab('tab-impact', this)">Impact ({{ detail.impact|length }})</button>
   <button class="tab-btn" onclick="showTab('tab-threads', this)">Threads ({{ detail.threads|length }})</button>
   <button class="tab-btn" onclick="showTab('tab-confirm', this)">Confirm ({{ detail.answers|length }})</button>
 </div>
 
-<div id="tab-claims" class="tab-panel">
+<div id="tab-code" class="tab-panel">
+  {% if not detail.code_reviewed %}
+  <p class="empty">The code axis did not run for this review — it predates the
+    code axis, ran with <code>HARNESS_CODE_REVIEW=0</code>, or every code agent
+    failed. Re-review to get one.</p>
+  {% else %}
+  <table class="table">
+    <thead><tr><th>Severity</th><th>Category</th><th>Location</th><th>Issue</th><th>Verified</th></tr></thead>
+    <tbody>
+    {% for i in detail.code %}
+      <tr>
+        <td><span class="verdict v-{{ i.severity|lower }}">{{ i.severity }}</span></td>
+        <td>{{ i.category }}</td>
+        <td class="muted"><a target="_blank" rel="noopener"
+          href="https://github.com/{{ repo_owner }}/{{ repo_name }}/blob/{{ detail.head_sha or detail.pr.head }}/{{ i.file }}#L{{ i.line }}">{{ i.file }}:{{ i.line }}</a></td>
+        <td><b>{{ i.id }}</b> {{ i.title }}
+          {% if i.scenario %}<div class="muted issue-scenario">When: {{ i.scenario }}</div>{% endif %}</td>
+        <td>{% if i.severity in ('BLOCKER', 'MAJOR') %}
+          {% set v = 'confirmed' if i.verified else 'unconfirmed' %}
+          <span class="verdict v-{{ v }}">{{ v }}</span>
+          {% else %}<span class="muted">—</span>{% endif %}</td>
+      </tr>
+    {% else %}
+      <tr><td colspan="5" class="empty">No defects found in the changed code</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% if detail.code_rejected %}
+  <p class="muted breakdown">{{ detail.code_rejected|length }} more reported
+    issue{{ 's' if detail.code_rejected|length != 1 }} rejected by the verify agent.</p>
+  {% endif %}
+  {% endif %}
+</div>
+
+<div id="tab-claims" class="tab-panel" style="display:none">
   <table class="table">
     <thead><tr><th>Claim</th><th>Category</th><th>Status</th><th>Evidence</th><th>Note</th></tr></thead>
     <tbody>

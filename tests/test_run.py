@@ -427,11 +427,65 @@ def test_main_posts_report_and_round_ping(tmp_path, monkeypatch, capsys):
     ping = calls["ping"]
     assert "Harness review" in ping
     assert "`abcdef1`" in ping                 # commit đã review
-    assert "**1** risk" in ping                # 1 claim PARTIAL
+    assert "**1** to look at" in ping          # 1 claim PARTIAL
     assert "**1** doc error" in ping           # 1 STALE
     assert "https://gh/c/1" in ping            # link tới báo cáo đầy đủ
     assert len(ping) < 400                     # "ngắn" là một yêu cầu
     assert "Posted round ping." in capsys.readouterr().out
+
+
+CODE_FINDINGS = {
+    "claims": [], "docs": [], "impact": [], "threads": [],
+    "unresolved_questions": [],
+    "code": [{"id": "K1", "file": "a.py", "line": 3, "severity": "MAJOR",
+              "category": "correctness", "title": "t", "scenario": "s",
+              "evidence": [], "verified": True}],
+    "code_meta": {"shards": 1, "failed_shards": 0, "verify": "ok"},
+}
+
+
+def _stub_posting(monkeypatch):
+    monkeypatch.setattr("src.run.post_comment", lambda *a, **k: True)
+    monkeypatch.setattr("src.run.find_report_comment", lambda *a, **k: None)
+    monkeypatch.setattr("src.run.post_ping", lambda *a, **k: None)
+
+
+def test_main_posts_inline_code_comments(tmp_path, monkeypatch, capsys):
+    _stub_pipeline(monkeypatch, tmp_path, findings=CODE_FINDINGS)
+    _stub_posting(monkeypatch)
+    seen = []
+
+    def fake_inline(o, r, n, snapshot, findings, **kw):
+        seen.append((o, r, n, findings))
+        return {"posted": 1, "skipped": {"outside_diff": 2, "unconfirmed": 0}}
+
+    monkeypatch.setattr("src.code_review.post_inline_review", fake_inline)
+    assert main(["demo/app", "7", "--skip-human"]) == 0
+    assert seen == [("demo", "app", 7, CODE_FINDINGS)]
+    assert ("Inline code comments: 1 posted (skipped: 2 outside diff)."
+            in capsys.readouterr().out)
+
+
+def test_inline_failure_does_not_fail_the_review(tmp_path, monkeypatch, capsys):
+    """The report already carries every issue; losing the inline copy is a warning."""
+    _stub_pipeline(monkeypatch, tmp_path, findings=CODE_FINDINGS)
+    _stub_posting(monkeypatch)
+
+    def boom(*a, **k):
+        raise RuntimeError("gh api failed: HTTP 422 line could not be resolved")
+
+    monkeypatch.setattr("src.code_review.post_inline_review", boom)
+    assert main(["demo/app", "7", "--skip-human"]) == 0
+    assert "could not post inline code comments" in capsys.readouterr().err
+
+
+def test_no_post_skips_inline_comments(tmp_path, monkeypatch):
+    _stub_pipeline(monkeypatch, tmp_path, findings=CODE_FINDINGS)
+    calls = []
+    monkeypatch.setattr("src.code_review.post_inline_review",
+                        lambda *a, **k: calls.append(a))
+    assert main(["demo/app", "7", "--skip-human", "--no-post"]) == 0
+    assert calls == []
 
 
 def test_main_no_ping_flag_skips_the_ping(tmp_path, monkeypatch, capsys):

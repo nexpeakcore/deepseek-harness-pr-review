@@ -20,8 +20,10 @@ reviewed automatically. Click <b>Review now</b> to run the first one.</p>{% endi
 <div class="kpi-row">
   <div class="kpi-card"><div class="kpi-label">PRs REVIEWED</div>
     <div class="kpi-value">{{ repo.prs_total }}</div></div>
-  <div class="kpi-card bad"><div class="kpi-label">RISKS FOUND</div>
+  <div class="kpi-card bad"><div class="kpi-label">BUGS FOUND</div>
     <div class="kpi-value">{{ repo.bugs_total }}</div></div>
+  <div class="kpi-card warn"><div class="kpi-label">NEEDS A LOOK</div>
+    <div class="kpi-value">{{ repo.attention_total|default(0) }}</div></div>
   <div class="kpi-card warn"><div class="kpi-label">DOC ERRORS</div>
     <div class="kpi-value">{{ repo.doc_errors_total }}</div></div>
   <div class="kpi-card"><div class="kpi-label">OPEN Qs</div>
@@ -33,7 +35,7 @@ reviewed automatically. Click <b>Review now</b> to run the first one.</p>{% endi
 <h2>Pull requests</h2>
 <table class="table">
   <thead><tr><th>#</th><th>Title</th><th>Draft</th><th>Review status</th>
-    <th>Risks</th><th>Doc errors</th><th>Actions</th></tr></thead>
+    <th>Bugs</th><th>Doc errors</th><th>Actions</th></tr></thead>
   <tbody>
   {% for p in pr_rows %}
     <tr>

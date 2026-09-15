@@ -2,6 +2,7 @@
 import time
 from pathlib import Path
 
+from src import code_review
 from src.claims import all_inferred
 from src.gh import run_gh
 
@@ -29,19 +30,46 @@ def _bullet(text, max_len=100):
 
 
 def summary_counts(findings: dict) -> dict:
-    """Headline numbers, shared by the full comment and the round ping."""
+    """Headline numbers, shared by the full comment, the ping and the dashboard.
+
+    `bugs` are things established as wrong: a claim the code contradicts, a
+    requirement it breaks, a BLOCKER or MAJOR code defect the verify agent did
+    not refute. `attention` is what needs a human look without being shown
+    wrong: a partly-true claim, a risk to a requirement.
+
+    Both used to be summed as "risks". Across 34 real reviews only 9 of ~90
+    "risks" were the code being wrong — the rest were imprecise descriptions
+    and statements the agent could not check — so the headline number said
+    little about the thing a reader wanted to know.
+    """
     claims = findings.get("claims", [])
+    impact = findings.get("impact", [])
+    docs = findings.get("docs", [])
     by_status = {k: sum(1 for c in claims if c.get("status") == k)
                  for k in ("PASS", "FAIL", "PARTIAL", "UNVERIFIED")}
-    risks = by_status["FAIL"] + by_status["PARTIAL"]
-    risks += sum(1 for i in findings.get("impact", [])
-                 if i.get("impact") in ("BROKEN", "RISK"))
+    code = code_review.code_counts(findings)
+    bug_breakdown = {
+        "claims_fail": by_status["FAIL"],
+        "impact_broken": sum(1 for i in impact if i.get("impact") == "BROKEN"),
+        "code_blocker": code["blocker"],
+        "code_major": code["major"],
+    }
+    attention_breakdown = {
+        "claims_partial": by_status["PARTIAL"],
+        "impact_risk": sum(1 for i in impact if i.get("impact") == "RISK"),
+    }
+    doc_breakdown = {s.lower(): sum(1 for d in docs if d.get("status") == s)
+                     for s in ("WRONG", "FABRICATED", "STALE")}
     return {
         "claims": len(claims),
         "by_status": by_status,
-        "risks": risks,
-        "doc_errors": sum(1 for d in findings.get("docs", [])
-                          if d.get("status") in ("WRONG", "FABRICATED", "STALE")),
+        "bugs": sum(bug_breakdown.values()),
+        "bug_breakdown": bug_breakdown,
+        "attention": sum(attention_breakdown.values()),
+        "attention_breakdown": attention_breakdown,
+        "doc_errors": sum(doc_breakdown.values()),
+        "doc_breakdown": doc_breakdown,
+        "code": code,
     }
 
 
@@ -112,6 +140,38 @@ def _suggested_description(claims: list[dict]) -> list[str]:
     return [f"- {c.get('text', '')}" for c in claims if c.get("text")]
 
 
+def _verified_text(issue: dict) -> str:
+    """confirmed / unconfirmed for issues the verify agent checks; — for MINOR."""
+    if issue.get("severity") not in code_review.VERIFIED_SEVERITIES:
+        return "—"
+    return "confirmed" if issue.get("verified") is True else "unconfirmed"
+
+
+def _code_report_lines(findings: dict) -> list[str]:
+    lines = [f"## Code review — {code_review.code_verdict_label(findings)}", ""]
+    if not code_review.reviewed(findings):
+        return lines + ["The code axis did not run for this review.", ""]
+    issues = findings.get("code", [])
+    if not issues:
+        lines += ["No defects found in the changed code.", ""]
+    else:
+        lines += ["| ID | Severity | Category | Location | Issue | Scenario | Verified |",
+                  "|---|---|---|---|---|---|---|"]
+        for i in code_review.by_severity(issues):
+            where = f"{i.get('file', '')}:{i.get('line', '')}"
+            lines.append(
+                f"| {i.get('id', '')} | {i.get('severity', '')} | "
+                f"{i.get('category', '')} | {_cell(where)} | {_cell(i.get('title'))} | "
+                f"{_cell(i.get('scenario'))} | {_verified_text(i)} |")
+        lines.append("")
+    rejected = findings.get("code_rejected") or []
+    if rejected:
+        lines += [f"{len(rejected)} more reported issue"
+                  f"{'' if len(rejected) == 1 else 's'} rejected by the verify "
+                  f"agent and not shown.", ""]
+    return lines
+
+
 def build_report(snapshot: dict, claims: list[dict], findings: dict,
                  answers: list[dict], session_dir: Path) -> str:
     """Write report.md. Returns the report content."""
@@ -137,6 +197,7 @@ def build_report(snapshot: dict, claims: list[dict], findings: dict,
             *_suggested_description(claims),
             "",
         ]
+    lines += _code_report_lines(findings)
     lines += [
         "## Claims" + (" (inferred from code)" if inferred else ""),
         "",
@@ -197,7 +258,11 @@ STATUS_COLORS = {
     "UNVERIFIED": "#6b7280", "NO_CLAIMS": "#6b7280",
     "INFERRED": "#b9770e", "STATED": "#6b7280",
     "UNAFFECTED": "#6b7280",
+    "BLOCKER": "#c0392b", "MAJOR": "#d35400", "MINOR": "#6b7280",
+    "CONFIRMED": "#27ae60", "UNCONFIRMED": "#6b7280",
 }
+CODE_VERDICT_COLOR = {"BLOCKER": "#c0392b", "MAJOR": "#d35400",
+                      "CLEAN": "#27ae60", "NOT_RUN": "#6b7280"}
 
 
 def _badge(text: str, color: str) -> str:
@@ -335,7 +400,25 @@ def build_comment(snapshot: dict, claims: list[dict], findings: dict,
             "please confirm or correct:</p>\n\n"
             + "\n".join(_suggested_description(claims)),
             open=True, count=len(claims)))
+    code_issues = code_review.by_severity(findings.get("code") or [])
+    code_verdict = code_review.code_verdict(findings)
+    if not code_review.reviewed(findings):
+        code_table = "<p>The code axis did not run for this review.</p>"
+    elif not code_issues:
+        code_table = "<p>No defects found in the changed code.</p>"
+    else:
+        code_table = _summary_table(
+            ["ID", "Severity", "Category", "Location", "Issue", "Scenario",
+             "Verified"],
+            [[i.get("id", ""), i.get("severity", ""), i.get("category", ""),
+              f"{i.get('file', '')}:{i.get('line', '')}", i.get("title", ""),
+              i.get("scenario", ""), _verified_text(i)] for i in code_issues],
+            color_cols={1, 6})
+
     sections += [
+        _comment_section("Code review", "🛠", code_table,
+                         open=code_verdict in ("BLOCKER", "MAJOR"),
+                         count=len(code_issues)),
         _comment_section("Claims" + (" (inferred from code)" if inferred else ""),
                          "🟢", claims_table, open=True,
                          count=len(findings.get("claims", []))),
@@ -350,10 +433,14 @@ def build_comment(snapshot: dict, claims: list[dict], findings: dict,
     ]
 
     counts = summary_counts(findings)
-    bugs, doc_errors = counts["risks"], counts["doc_errors"]
+    bugs, attention = counts["bugs"], counts["attention"]
+    doc_errors = counts["doc_errors"]
+    code_color = CODE_VERDICT_COLOR.get(code_verdict, "#6b7280")
     summary = (
         f"{_badge(v_text, v_color)} "
-        f"{_badge(f'Risks found: {bugs}', '#c0392b' if bugs else '#6b7280')} "
+        f"{_badge(code_review.code_verdict_label(findings), code_color)} "
+        f"{_badge(f'Bugs: {bugs}', '#c0392b' if bugs else '#6b7280')} "
+        f"{_badge(f'Needs a look: {attention}', '#b9770e' if attention else '#6b7280')} "
         f"{_badge(f'Doc errors: {doc_errors}', '#b9770e' if doc_errors else '#6b7280')}"
     )
     return (
@@ -387,8 +474,9 @@ def build_ping(snapshot: dict, findings: dict, rounds: int | None = None,
     sha = (snapshot.get("head_sha") or "")[:7]
     where = f" · commit `{sha}`" if sha else ""
     line1 = f"🔍 **Harness review — {head} done**{where} · {when}"
-    line2 = (f"{verdict} · **{c['risks']}** risk"
-             f"{'' if c['risks'] == 1 else 's'} · "
+    line2 = (f"{verdict} · {code_review.code_verdict_label(findings)} · "
+             f"**{c['bugs']}** bug{'' if c['bugs'] == 1 else 's'} · "
+             f"**{c['attention']}** to look at · "
              f"**{c['doc_errors']}** doc error"
              f"{'' if c['doc_errors'] == 1 else 's'} · "
              f"{c['claims']} claim{'' if c['claims'] == 1 else 's'}"

@@ -22,6 +22,7 @@ import sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+from src import code_review
 from src.agent_pool import agent_slot, max_agents
 from src.docs_rank import rank_docs
 
@@ -189,15 +190,41 @@ What the change is understood to do:
 {SCOPE_CREEP_BLOCK if is_inferred(claims) else ""}
 Requirements:
 1. Impact: which requirement/business logic does this change affect?
-   CHANGED / BROKEN / UNAFFECTED / RISK, with a brief detail.
+   CHANGED / BROKEN / UNAFFECTED / RISK, with a brief detail. RISK means a
+   concrete way this change could break the requirement. Something you simply
+   could not verify is NOT a risk — put it in unresolved_questions instead.
 2. Threads: do unresolved comments still hold against the current code?
 3. Don't guess. Anything unverifiable → add it to unresolved_questions
    (each question ≤20 words, in English).
 {SECURITY_BLOCK}{_write_instruction(out_name, IMPACT_SCHEMA)}"""
 
 
+def _code_tasks(snapshot: dict) -> list[dict]:
+    """One code agent per shard of changed files, each with its diff as input.
+
+    The diff goes into the workspace as a file rather than into the prompt: a
+    large PR's patch would crowd out the instructions, and the agent can page
+    through a file with the same Read tool it uses on the code.
+    """
+    shards = code_review.shard_files(snapshot.get("files") or [])
+    tasks = []
+    for idx, files in enumerate(shards, start=1):
+        name = f"code-{idx}" if len(shards) > 1 else "code"
+        out, diff = f"findings-{name}.json", f"review-diff-{name}.patch"
+        tasks.append({
+            "name": name, "axis": "code", "out": out,
+            "keys": ("code", "unresolved_questions"),
+            "inputs": {diff: code_review.render_diff(files)},
+            "prompt": code_review.build_code_prompt(
+                _pr_context(snapshot), diff, SECURITY_BLOCK,
+                _write_instruction(out, code_review.CODE_SCHEMA),
+                shard=(idx, len(shards)) if len(shards) > 1 else None),
+        })
+    return tasks
+
+
 def plan_tasks(snapshot: dict, claims: list[dict],
-               doc_candidates: list[dict]) -> list[dict]:
+               doc_candidates: list[dict], code: bool = True) -> list[dict]:
     """The agents this review needs, each with its own prompt and output file."""
     tasks = []
     shards = [claims[i:i + CLAIMS_SHARD_SIZE]
@@ -222,6 +249,8 @@ def plan_tasks(snapshot: dict, claims: list[dict],
         "keys": ("impact", "threads", "unresolved_questions"),
         "prompt": build_impact_prompt(snapshot, claims, "findings-impact.json"),
     })
+    if code:
+        tasks += _code_tasks(snapshot)
     return tasks
 
 
@@ -367,12 +396,15 @@ def run_verify(cfg: dict, workspace: Path, session_dir: Path, snapshot: dict,
     runner = runner or select_runner(cfg)
     session_dir.mkdir(parents=True, exist_ok=True)
     doc_candidates = rank_docs(workspace, snapshot, claims)
-    tasks = plan_tasks(snapshot, claims, doc_candidates)
+    tasks = plan_tasks(snapshot, claims, doc_candidates,
+                       code=cfg.get("code_review", True))
 
     # A part file left by the previous round would be read as this round's
     # result if its agent fails — re-review must start from nothing.
     for task in tasks:
         (workspace / task["out"]).unlink(missing_ok=True)
+        for name, content in task.get("inputs", {}).items():
+            (workspace / name).write_text(content)
 
     print(f"      {len(tasks)} agents on {backend_label(cfg)}: "
           f"{', '.join(t['name'] for t in tasks)}"
@@ -399,8 +431,66 @@ def run_verify(cfg: dict, workspace: Path, session_dir: Path, snapshot: dict,
         findings["unresolved_questions"].append(
             f"Review gap: the {task['name']} agent failed ({error}) — check this axis by hand.")
 
+    if any(t["axis"] == "code" for t in tasks):
+        _finish_code_axis(cfg, workspace, session_dir, snapshot, results,
+                          runner, findings)
+
     _validate_findings(findings)
     return findings
+
+
+def _code_verify_task(snapshot: dict, issues: list[dict]) -> dict:
+    out = "findings-code-verify.json"
+    return {
+        "name": "code-verify", "axis": "code-verify", "out": out,
+        "keys": ("verdicts",),
+        "prompt": code_review.build_verify_prompt(
+            _pr_context(snapshot), issues, SECURITY_BLOCK,
+            _write_instruction(out, code_review.VERDICTS_SCHEMA)),
+    }
+
+
+def _finish_code_axis(cfg: dict, workspace: Path, session_dir: Path,
+                      snapshot: dict, results: list, runner,
+                      findings: dict) -> None:
+    """Number the code issues, have a second agent check the serious ones.
+
+    Runs after the fan-out rather than inside it: the verify agent needs the
+    code agents' output. It only runs when there is a BLOCKER or MAJOR to
+    check, so a clean PR pays nothing extra.
+
+    code_meta records what actually ran, because "no issues" and "the code
+    agents all died" must never render the same.
+    """
+    code_parts = [part for task, part, _ in results if task["axis"] == "code"]
+    issues = code_review.normalize_issues(
+        [i for part in code_parts if part for i in part["code"]])
+    meta = {"shards": len(code_parts),
+            "failed_shards": sum(1 for part in code_parts if part is None),
+            "verify": "skipped"}
+    verdicts = None
+    to_check = code_review.needs_verification(issues)
+    if to_check:
+        task = _code_verify_task(snapshot, to_check)
+        (workspace / task["out"]).unlink(missing_ok=True)
+        _, part, error = _execute(cfg, workspace, session_dir, task, runner)
+        if part is None:
+            meta["verify"] = "failed"
+            findings["unresolved_questions"].append(
+                f"Review gap: the code-verify agent failed ({error}) — "
+                f"{len(to_check)} blocker/major code issue"
+                f"{'' if len(to_check) == 1 else 's'} unconfirmed.")
+        else:
+            meta["verify"] = "ok"
+            verdicts = part["verdicts"]
+    kept, rejected = code_review.apply_verdicts(issues, verdicts)
+    if meta["verify"] == "ok":
+        confirmed = sum(1 for i in kept if i.get("verified") is True)
+        print(f"      code-verify: {confirmed} confirmed, "
+              f"{len(rejected)} rejected", flush=True)
+    findings["code"] = kept
+    findings["code_rejected"] = rejected
+    findings["code_meta"] = meta
 
 
 def _validate_findings(data: dict) -> None:
@@ -415,6 +505,14 @@ def _validate_findings(data: dict) -> None:
     for d in data["docs"]:
         if d.get("status") not in ("MATCH", "STALE", "WRONG", "FABRICATED"):
             raise RuntimeError(f"invalid findings: doc has invalid schema: {d}")
+    # Optional: a session from before the code axis, or with it off, has no
+    # "code" key — and reads as "not reviewed", never as "no issues".
+    if "code" in data:
+        if not isinstance(data["code"], list):
+            raise RuntimeError("invalid findings: code must be a list")
+        for i in data["code"]:
+            if i.get("severity") not in code_review.SEVERITIES:
+                raise RuntimeError(f"invalid findings: code issue has invalid schema: {i}")
 
 
 def parse_findings(path: Path) -> dict:

@@ -67,6 +67,11 @@ the header reports what it found rather than what the author claimed.</p>
 
 <h2>What it does</h2>
 <ul>
+  <li><b>Code review</b> — the changed code is read for defects: correctness,
+  error handling, security, concurrency, resources, performance, missing tests.
+  Each issue names a concrete failure scenario, a second agent confirms or
+  rejects every <b>Blocker / Major</b>, and confirmed ones are posted inline on
+  their lines</li>
   <li><b>Claim verification</b> — each sentence of the PR description is split
   into verifiable claims and checked against the real code: <b>Matches / Partial
   / Mismatch / Unverified</b></li>
@@ -81,8 +86,8 @@ the header reports what it found rather than what the author claimed.</p>
   re-reviews when the <i>diff</i> changes. A rebase, a merge of the base branch
   or an amended message moves the head without changing a line, and costs
   nothing</li>
-  <li><b>Web dashboard</b> — per-repo KPIs: risks found, doc errors, verdicts, review
-  rounds</li>
+  <li><b>Web dashboard</b> — per-repo KPIs: bugs found, needs a look, doc
+  errors, verdicts, review rounds</li>
 </ul>
 
 <h2 id="guides">Guides</h2>

@@ -123,6 +123,12 @@ tr.failed td { background: #fdecea; }
 }
 .tag.fail, .v-contradicted, .v-fail, .v-fabricated, .v-broken, .v-inconsistent { background: #fdecea; color: var(--red); }
 .verdict { margin-right: 4px; }
+/* code axis: issue severity, code verdict, verify outcome */
+.v-blocker { background: #fdecea; color: var(--red); }
+.v-major { background: #fdf0e6; color: #d35400; }
+.v-minor, .v-not_run, .v-unconfirmed { background: #eef1f4; color: var(--gray); }
+.v-clean, .v-confirmed { background: #eaf7ee; color: var(--green); }
+.issue-scenario { margin-top: 4px; }
 
 .warn-block { border-color: var(--orange); background: #fffdf7; }
 .warn-block h2 { color: var(--orange); }

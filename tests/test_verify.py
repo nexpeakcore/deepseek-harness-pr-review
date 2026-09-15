@@ -170,8 +170,32 @@ def _claims(n):
 
 def test_plan_tasks_one_agent_per_axis():
     tasks = plan_tasks(SNAP, _claims(3), [])
+    assert [t["name"] for t in tasks] == ["claims", "docs", "impact", "code"]
+    assert len({t["out"] for t in tasks}) == 4  # no two agents share a file
+
+
+def test_plan_tasks_code_axis_can_be_switched_off():
+    tasks = plan_tasks(SNAP, _claims(3), [], code=False)
     assert [t["name"] for t in tasks] == ["claims", "docs", "impact"]
-    assert len({t["out"] for t in tasks}) == 3  # no two agents share a file
+
+
+def test_code_task_carries_its_diff_as_an_input_file():
+    snap = {**SNAP, "files": [{"filename": "a.py", "status": "modified",
+                               "patch": "@@ -1 +1 @@\n-x\n+y"}]}
+    task = plan_tasks(snap, [], [])[-1]
+    assert task["axis"] == "code"
+    diff = task["inputs"]["review-diff-code.patch"]
+    assert "=== a.py" in diff
+    assert "1 +y" in diff                      # new-side line number in front
+    assert "review-diff-code.patch" in task["prompt"]
+    assert "findings-code.json" in task["prompt"]
+
+
+def test_plan_tasks_shards_code_by_files():
+    snap = {**SNAP, "files": [{"filename": f"f{i}.py"} for i in range(25)]}
+    names = [t["name"] for t in plan_tasks(snap, [], []) if t["axis"] == "code"]
+    assert names == ["code-1", "code-2"]
+    assert "batch 1 of 2" in plan_tasks(snap, [], [])[2]["prompt"]
 
 
 def test_plan_tasks_shards_many_claims():
@@ -188,9 +212,9 @@ def test_plan_tasks_shards_many_claims():
     assert "batch 1 of 3" in claim_tasks[0]["prompt"]
 
 
-def test_plan_tasks_without_claims_still_reviews_docs_and_impact():
+def test_plan_tasks_without_claims_still_reviews_docs_impact_and_code():
     tasks = plan_tasks(SNAP, [], [])
-    assert [t["name"] for t in tasks] == ["docs", "impact"]
+    assert [t["name"] for t in tasks] == ["docs", "impact", "code"]
 
 
 def test_merge_findings_concatenates_and_dedupes_questions():
@@ -222,6 +246,21 @@ PAYLOADS = {
              "unresolved_questions": ["is d.md still used?"]},
     "impact": {"impact": [{"requirement": "r", "impact": "RISK", "detail": "x"}],
                "threads": [], "unresolved_questions": []},
+    "code": {"code": [
+        {"file": "a.py", "line": 3, "severity": "MAJOR", "category": "correctness",
+         "title": "drops the last item", "scenario": "3 items -> 2 returned",
+         "evidence": ["a.py:3"]},
+        {"file": "a.py", "line": 9, "severity": "BLOCKER", "category": "security",
+         "title": "shell injection", "scenario": "name='; rm -rf ~'",
+         "evidence": ["a.py:9"]},
+        {"file": "a.py", "line": 12, "severity": "MINOR", "category": "resource",
+         "title": "file left open", "scenario": "each call leaks a handle",
+         "evidence": []},
+    ], "unresolved_questions": []},
+    "code-verify": {"verdicts": [
+        {"id": "K1", "verdict": "CONFIRMED", "reason": "traced"},
+        {"id": "K2", "verdict": "REJECTED", "reason": "name is validated upstream"},
+    ]},
 }
 
 
@@ -301,7 +340,7 @@ def test_axes_actually_run_in_parallel(tmp_path, monkeypatch):
 
     runner, state = _concurrency_probe({"unresolved_questions": []})
     tasks = plan_tasks(SNAP, _claims(20), [])
-    assert len(tasks) == 4               # claims-1, claims-2, docs, impact
+    assert len(tasks) == 5               # claims-1, claims-2, docs, impact, code
 
     run_verify({"model": "m"}, ws, sd, SNAP, _claims(20), runner=runner)
     assert state["peak"] == 4
@@ -330,9 +369,9 @@ def test_verify_reports_progress_per_agent(tmp_path, capsys, monkeypatch):
     out = capsys.readouterr().out
     # The backend is named too: a review that silently ran on the wrong
     # provider is otherwise indistinguishable in the live log.
-    assert "4 agents on deepseek/m: claims-1, claims-2, docs, impact" in out
+    assert "5 agents on deepseek/m: claims-1, claims-2, docs, impact, code" in out
     assert "cap 4 concurrent" in out
-    for name in ("claims-1", "claims-2", "docs", "impact"):
+    for name in ("claims-1", "claims-2", "docs", "impact", "code"):
         assert f"{name}: done in" in out
 
 
@@ -342,6 +381,97 @@ def test_verify_reports_a_failed_agent_in_the_log(tmp_path, capsys):
     run_verify({"model": "m"}, ws, sd, SNAP, _claims(1),
                runner=_fake_runner(PAYLOADS, fail=("docs",)))
     assert "docs: FAILED after" in capsys.readouterr().out
+
+
+# --- code axis --------------------------------------------------------------
+
+def _dirs(tmp_path):
+    ws, sd = tmp_path / "ws", tmp_path / "sd"
+    ws.mkdir()
+    return ws, sd
+
+
+def _recording(payloads, fail=()):
+    """_fake_runner that also records each task's prompt by name."""
+    base, seen = _fake_runner(payloads, fail=fail), {}
+
+    def runner(cfg, workspace, session_dir, task):
+        seen[task["name"]] = task["prompt"]
+        return base(cfg, workspace, session_dir, task)
+    return runner, seen
+
+
+def test_run_verify_confirms_and_rejects_code_issues(tmp_path, capsys):
+    ws, sd = _dirs(tmp_path)
+    findings = run_verify({"model": "m"}, ws, sd, SNAP, _claims(1),
+                          runner=_fake_runner(PAYLOADS))
+    assert [i["id"] for i in findings["code"]] == ["K1", "K3"]
+    assert findings["code"][0]["verified"] is True
+    assert findings["code"][1]["verified"] is None      # MINOR: never checked
+    assert [i["id"] for i in findings["code_rejected"]] == ["K2"]
+    assert findings["code_rejected"][0]["reason"] == "name is validated upstream"
+    assert findings["code_meta"] == {"shards": 1, "failed_shards": 0, "verify": "ok"}
+    assert (ws / "review-diff-code.patch").exists()
+    assert "code-verify: 1 confirmed, 1 rejected" in capsys.readouterr().out
+
+
+def test_code_verifier_only_sees_blocker_and_major(tmp_path):
+    ws, sd = _dirs(tmp_path)
+    runner, seen = _recording(PAYLOADS)
+    run_verify({"model": "m"}, ws, sd, SNAP, _claims(1), runner=runner)
+    assert "drops the last item" in seen["code-verify"]
+    assert "shell injection" in seen["code-verify"]
+    assert "file left open" not in seen["code-verify"]
+
+
+def test_a_dead_verifier_leaves_issues_unconfirmed_and_says_so(tmp_path):
+    ws, sd = _dirs(tmp_path)
+    findings = run_verify({"model": "m"}, ws, sd, SNAP, _claims(1),
+                          runner=_fake_runner(PAYLOADS, fail=("code-verify",)))
+    assert len(findings["code"]) == 3
+    assert all(i["verified"] is None for i in findings["code"])
+    assert findings["code_meta"]["verify"] == "failed"
+    assert any("code-verify agent failed" in q and "2 blocker/major" in q
+               for q in findings["unresolved_questions"])
+
+
+def test_a_dead_code_agent_reads_not_reviewed(tmp_path):
+    from src.code_review import code_verdict
+
+    ws, sd = _dirs(tmp_path)
+    findings = run_verify({"model": "m"}, ws, sd, SNAP, _claims(1),
+                          runner=_fake_runner(PAYLOADS, fail=("code",)))
+    assert findings["code_meta"]["failed_shards"] == 1
+    assert code_verdict(findings) == "NOT_RUN"
+    assert any("the code agent failed" in q for q in findings["unresolved_questions"])
+
+
+def test_clean_code_skips_the_verifier(tmp_path):
+    ws, sd = _dirs(tmp_path)
+    payloads = {**PAYLOADS, "code": {"code": [], "unresolved_questions": []}}
+    runner, seen = _recording(payloads)
+    findings = run_verify({"model": "m"}, ws, sd, SNAP, _claims(1), runner=runner)
+    assert "code-verify" not in seen
+    assert findings["code"] == []
+    assert findings["code_meta"]["verify"] == "skipped"
+
+
+def test_a_stale_verifier_answer_is_not_reused(tmp_path):
+    """Last round's verdicts must not decide this round's issues."""
+    ws, sd = _dirs(tmp_path)
+    (ws / "findings-code-verify.json").write_text(json.dumps(
+        {"verdicts": [{"id": "K1", "verdict": "REJECTED", "reason": "old"}]}))
+    findings = run_verify({"model": "m"}, ws, sd, SNAP, _claims(1),
+                          runner=_fake_runner(PAYLOADS, fail=("code-verify",)))
+    assert findings["code_rejected"] == []
+
+
+def test_code_review_off_leaves_no_code_key(tmp_path):
+    ws, sd = _dirs(tmp_path)
+    runner, seen = _recording(PAYLOADS)
+    findings = run_verify({"model": "m", "code_review": False}, ws, sd, SNAP,
+                          _claims(1), runner=runner)
+    assert "code" not in findings and "code" not in seen
 
 
 # --- agent backend selection ------------------------------------------------

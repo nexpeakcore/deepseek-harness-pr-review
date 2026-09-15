@@ -40,6 +40,9 @@ Table columns: `# | Title | Draft | Review status | Risks | Doc errors`
 
 **Broader metrics (`web/metrics.py`):**
 - `risks` = claims `FAIL` + `PARTIAL` + impact `BROKEN` + `RISK` (internal key: bugs)
+  — superseded by [the code review axis](2026-09-15-code-review-axis-design.md):
+  bugs = claim `FAIL` + impact `BROKEN` + code `BLOCKER`/`MAJOR`; `PARTIAL` and
+  `RISK` moved to a separate "needs a look" count
 - `doc_errors` = docs `WRONG` + `FABRICATED` + `STALE`
 - Demo fixture (tests/test_metrics.py): claims PARTIAL/RISK/STALE combinations assert the counting rules
   → risks = 4, doc_errors = 3 (covered by test_metrics.py::test_pr_record_wider_metrics: FAIL+PARTIAL claims, BROKEN+RISK impacts, WRONG+FABRICATED+STALE docs)
