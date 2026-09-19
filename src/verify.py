@@ -383,8 +383,27 @@ def _run_agent_claude(cfg: dict, workspace: Path, session_dir: Path,
     return response
 
 
+def _run_agent_codex(cfg: dict, workspace: Path, session_dir: Path,
+                     task: dict) -> str:
+    """Run Codex read-only, then let the trusted harness write the part file."""
+    from src import codex_cli
+
+    response = codex_cli.run(
+        task["prompt"] + "\n\nDo not modify files. Return only the complete JSON object "
+        f"that belongs in {task['out']}.",
+        model=(cfg.get("codex_model") or cfg.get("model") or codex_cli.DEFAULT_MODEL),
+        cwd=workspace,
+    )
+    salvaged = codex_cli.extract_json_object(response)
+    if salvaged is None:
+        raise RuntimeError("codex returned no complete JSON object")
+    (workspace / task["out"]).write_text(salvaged)
+    return response
+
+
 # Agent backends, by HARNESS_PROVIDER value.
-RUNNERS = {"deepseek": _run_agent, "claude": _run_agent_claude}
+RUNNERS = {"deepseek": _run_agent, "claude": _run_agent_claude,
+           "codex": _run_agent_codex}
 DEFAULT_PROVIDER = "deepseek"
 
 

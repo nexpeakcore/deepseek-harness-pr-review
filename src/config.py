@@ -31,9 +31,8 @@ _load_dotenv()
 
 
 # Agent backends. "deepseek" runs the Harness SDK against the DeepSeek API and
-# needs DEEPSEEK_API_KEY; "claude" shells out to the Claude Code CLI, which
-# brings its own credentials (see src/claude_cli.py).
-PROVIDERS = ("deepseek", "claude")
+# needs DEEPSEEK_API_KEY; CLI providers carry their own credentials.
+PROVIDERS = ("deepseek", "claude", "codex")
 DEFAULT_PROVIDER = "deepseek"
 
 
@@ -45,6 +44,7 @@ class Config:
     session_root: Path
     provider: str = DEFAULT_PROVIDER
     claude_model: str = "sonnet"
+    codex_model: str = "gpt-5.5"
     # The code axis costs one agent per ~20 changed files plus a verify agent,
     # roughly a third on top of a review. On by default; this is the off switch.
     code_review: bool = True
@@ -72,8 +72,10 @@ class Config:
         """
         return {
             "provider": self.provider,
-            "model": self.claude_model if self.provider == "claude" else self.model,
+            "model": (self.claude_model if self.provider == "claude" else
+                      self.codex_model if self.provider == "codex" else self.model),
             "claude_model": self.claude_model,
+            "codex_model": self.codex_model,
             "api_key": self.api_key,
             "base_url": self.base_url,
             "code_review": self.code_review,
@@ -89,6 +91,7 @@ def load_config() -> Config:
         provider=os.environ.get("HARNESS_PROVIDER", DEFAULT_PROVIDER).strip().lower()
                  or DEFAULT_PROVIDER,
         claude_model=os.environ.get("HARNESS_CLAUDE_MODEL", "sonnet").strip() or "sonnet",
+        codex_model=os.environ.get("HARNESS_CODEX_MODEL", "gpt-5.5").strip() or "gpt-5.5",
         code_review=os.environ.get("HARNESS_CODE_REVIEW", "1").strip().lower()
                     not in ("0", "false", "no", "off"),
     )

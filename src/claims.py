@@ -198,6 +198,9 @@ def select_chat(provider: str | None):
     if (provider or "").strip().lower() == "claude":
         from src import claude_cli
         return claude_cli.chat
+    if (provider or "").strip().lower() == "codex":
+        from src import codex_cli
+        return codex_cli.chat
     return _default_chat
 
 

@@ -48,6 +48,15 @@ def test_load_config_reads_the_claude_backend(monkeypatch):
     assert cfg.needs_deepseek_key is False
 
 
+def test_load_config_reads_the_codex_backend(monkeypatch):
+    monkeypatch.setenv("HARNESS_PROVIDER", " Codex ")
+    monkeypatch.setenv("HARNESS_CODEX_MODEL", "gpt-5.5")
+    cfg = load_config()
+    assert cfg.provider == "codex"
+    assert cfg.codex_model == "gpt-5.5"
+    assert cfg.needs_deepseek_key is False
+
+
 def test_phase_cfg_resolves_the_model_for_the_active_provider(monkeypatch):
     monkeypatch.setenv("DSH_MODEL", "deepseek-v4-flash")
     monkeypatch.setenv("HARNESS_CLAUDE_MODEL", "opus")
@@ -59,3 +68,7 @@ def test_phase_cfg_resolves_the_model_for_the_active_provider(monkeypatch):
     claude = load_config().phase_cfg()
     assert claude["model"] == "opus"
     assert claude["provider"] == "claude"
+
+    monkeypatch.setenv("HARNESS_PROVIDER", "codex")
+    monkeypatch.setenv("HARNESS_CODEX_MODEL", "gpt-5.5")
+    assert load_config().phase_cfg()["model"] == "gpt-5.5"

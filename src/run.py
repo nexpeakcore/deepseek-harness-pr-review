@@ -59,6 +59,17 @@ def _doctor() -> int:
             print("✗ claude CLI not found on PATH — install Claude Code: "
                   "https://claude.com/claude-code")
             ok = False
+    elif cfg.provider == "codex":
+        print(f"✓ provider: codex (model {cfg.codex_model})")
+        from src import codex_cli
+
+        installed = codex_cli.version() if codex_cli.available() else ""
+        if installed:
+            print(f"✓ codex CLI installed ({installed})")
+            print("· the CLI carries its own credentials — no API key needed here")
+        else:
+            print("✗ codex CLI not found on PATH — install Codex CLI")
+            ok = False
     else:
         print(f"✓ provider: deepseek (model {cfg.model})")
         if cfg.api_key:
