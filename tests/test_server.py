@@ -822,3 +822,9 @@ def test_header_backend_follows_a_restart(tmp_path, monkeypatch):
     monkeypatch.setenv("HARNESS_PROVIDER", "claude")
     monkeypatch.setenv("HARNESS_CLAUDE_MODEL", "sonnet")
     assert "claude · <strong>sonnet</strong>" in client.get("/").text
+
+    monkeypatch.setenv("HARNESS_PROVIDER", "codex")
+    monkeypatch.setenv("HARNESS_CODEX_MODEL", "gpt-5.5")
+    html = client.get("/").text
+    assert "codex · <strong>gpt-5.5</strong>" in html
+    assert "HARNESS_PROVIDER=codex, HARNESS_CODEX_MODEL=gpt-5.5" in html

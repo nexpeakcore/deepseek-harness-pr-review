@@ -49,6 +49,11 @@ def build_argv(*, model: str, output_path: Path, cwd: Path | None = None) -> lis
 def run(prompt: str, *, model: str = DEFAULT_MODEL, cwd: Path | None = None,
         timeout: int = DEFAULT_TIMEOUT_SECONDS, _run=subprocess.run) -> str:
     """Run Codex and return its final response without allowing workspace writes."""
+    # run.py passes the session workspace relative to the checkout root. The
+    # subprocess itself uses that directory as cwd, so forwarding it unchanged
+    # to `codex --cd` makes Codex resolve it a second time beneath itself.
+    # Resolve once before handing the path to either process.
+    cwd = cwd.resolve() if cwd is not None else None
     with tempfile.TemporaryDirectory(prefix="harness-codex-") as tmp:
         output = Path(tmp) / "final.txt"
         try:

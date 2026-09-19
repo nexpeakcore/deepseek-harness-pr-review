@@ -57,7 +57,8 @@ def agent_backend() -> dict:
     """
     cfg = load_config()
     model = cfg.phase_cfg()["model"]
-    model_env = "HARNESS_CLAUDE_MODEL" if cfg.provider == "claude" else "DSH_MODEL"
+    model_env = {"claude": "HARNESS_CLAUDE_MODEL",
+                 "codex": "HARNESS_CODEX_MODEL"}.get(cfg.provider, "DSH_MODEL")
     return {"provider": cfg.provider, "model": model,
             "env": f"HARNESS_PROVIDER={cfg.provider}, {model_env}={model}"}
 
