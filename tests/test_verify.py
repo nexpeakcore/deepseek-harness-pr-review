@@ -703,13 +703,14 @@ def test_select_runner_defaults_to_the_sdk_backend():
 
     assert select_runner({}) is RUNNERS["deepseek"]
     assert select_runner({"provider": "  Claude "}) is RUNNERS["claude"]
+    assert select_runner({"provider": "codex"}) is RUNNERS["codex"]
 
 
 def test_select_runner_names_the_valid_providers():
     """A typo in HARNESS_PROVIDER must not silently fall back to the default."""
     from src.verify import select_runner
 
-    with pytest.raises(RuntimeError, match="claude, deepseek"):
+    with pytest.raises(RuntimeError, match="claude, codex, deepseek"):
         select_runner({"provider": "cluade"})
 
 
@@ -718,6 +719,21 @@ def test_backend_label_reports_what_actually_ran():
 
     assert backend_label({"model": "deepseek-v4-flash"}) == "deepseek/deepseek-v4-flash"
     assert backend_label({"provider": "claude", "model": "opus"}) == "claude/opus"
+    assert backend_label({"provider": "codex", "model": "gpt-5.5"}) == "codex/gpt-5.5"
+
+
+def test_codex_runner_writes_the_validated_inline_object(tmp_path, monkeypatch):
+    from src import codex_cli
+    from src.verify import _run_agent_codex
+
+    monkeypatch.setattr(codex_cli, "run",
+                        lambda prompt, **kw: '{"docs": [], "unresolved_questions": []}')
+    ws, sd = tmp_path / "ws", tmp_path / "sd"
+    ws.mkdir()
+    _run_agent_codex({"codex_model": "gpt-5.5"}, ws, sd,
+                     {"name": "docs", "out": "findings-docs.json", "prompt": "..."})
+    assert json.loads((ws / "findings-docs.json").read_text()) == {
+        "docs": [], "unresolved_questions": []}
 
 
 def test_claude_runner_salvages_a_part_answered_inline(tmp_path, monkeypatch):

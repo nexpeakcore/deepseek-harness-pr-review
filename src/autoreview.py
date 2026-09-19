@@ -461,6 +461,14 @@ def main(argv: list[str] | None = None) -> int:
                   f"PATH was: {os.environ.get('PATH', '(unset)')}",
                   file=sys.stderr)
             return 2
+    if env.provider == "codex":
+        from src import codex_cli
+
+        if not codex_cli.available():
+            print(f"HARNESS_PROVIDER=codex but the codex CLI is not on PATH "
+                  f"— install Codex CLI. PATH was: {os.environ.get('PATH', '(unset)')}",
+                  file=sys.stderr)
+            return 2
     if not gh_available():
         print("gh CLI not installed or not authenticated (gh auth login)",
               file=sys.stderr)

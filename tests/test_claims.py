@@ -156,6 +156,8 @@ def test_select_chat_picks_the_backend_named_by_the_provider():
     assert select_chat(None) is openai_chat
     assert select_chat("deepseek") is openai_chat
     assert select_chat(" CLAUDE ") is claude_cli.chat
+    from src import codex_cli
+    assert select_chat("codex") is codex_cli.chat
 
 
 def test_extract_claims_uses_the_provider_backend(tmp_path, monkeypatch):
