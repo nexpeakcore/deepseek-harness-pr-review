@@ -1,4 +1,5 @@
 import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -22,6 +23,21 @@ def test_run_returns_the_final_message(tmp_path):
         return subprocess.CompletedProcess(argv, 0, "", "")
 
     assert codex_cli.run("hi", _run=fake) == '{"ok": true}'
+
+
+def test_run_resolves_a_relative_workspace_before_passing_it_to_codex(tmp_path,
+                                                                       monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    relative_workspace = Path("workspace")
+    relative_workspace.mkdir()
+
+    def fake(argv, **kwargs):
+        Path(argv[argv.index("--output-last-message") + 1]).write_text('{"ok": true}')
+        assert kwargs["cwd"] == str(relative_workspace.resolve())
+        assert argv[argv.index("--cd") + 1] == str(relative_workspace.resolve())
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    assert codex_cli.run("hi", cwd=relative_workspace, _run=fake) == '{"ok": true}'
 
 
 def test_run_names_a_missing_binary():
