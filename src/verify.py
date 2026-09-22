@@ -401,9 +401,28 @@ def _run_agent_codex(cfg: dict, workspace: Path, session_dir: Path,
     return response
 
 
+def _run_agent_agy(cfg: dict, workspace: Path, session_dir: Path,
+                   task: dict) -> str:
+    """Run Antigravity CLI, then write or salvage the part file."""
+    from src import agy_cli
+
+    out = workspace / task["out"]
+    response = agy_cli.run(
+        task["prompt"],
+        model=(cfg.get("agy_model") or cfg.get("model") or agy_cli.DEFAULT_MODEL),
+        cwd=workspace,
+    )
+    if not out.exists():
+        salvaged = agy_cli.extract_json_object(response)
+        if salvaged is None:
+            raise RuntimeError("agy returned no complete JSON object")
+        out.write_text(salvaged)
+    return response
+
+
 # Agent backends, by HARNESS_PROVIDER value.
 RUNNERS = {"deepseek": _run_agent, "claude": _run_agent_claude,
-           "codex": _run_agent_codex}
+           "codex": _run_agent_codex, "agy": _run_agent_agy}
 DEFAULT_PROVIDER = "deepseek"
 
 

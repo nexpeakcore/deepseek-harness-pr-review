@@ -115,6 +115,7 @@ comments — is identical either way.
 | `deepseek` (default) | DeepSeek Harness SDK, composed by `cordis/minimal.cordis.yml` | `DEEPSEEK_API_KEY` |
 | `claude` | Headless `claude -p` (Claude Code CLI) | whatever the CLI is already logged in with — a Claude subscription is enough, no extra API key |
 | `codex` | Headless `codex exec` (Codex CLI) | existing Codex CLI login; no API key is read by this project |
+| `agy` | Headless `agy` (Antigravity CLI) | existing Antigravity CLI login; no API key is read by this project |
 
 ```bash
 export HARNESS_PROVIDER=claude
@@ -132,9 +133,18 @@ harness-pr-review doctor
 harness-pr-review owner/repo 123
 ```
 
-The Codex backend runs `codex exec` in a read-only sandbox. It returns JSON to
+Or run with Antigravity (`agy`):
+
+```bash
+export HARNESS_PROVIDER=agy
+export HARNESS_AGY_MODEL=gemini-3.8-flash
+harness-pr-review doctor
+harness-pr-review owner/repo 123
+```
+
+The Codex and Antigravity backends run in non-interactive headless mode. They return JSON to
 the harness, which validates and writes review part files itself; the reviewed
-PR cannot direct Codex to edit its disposable worktree.
+PR cannot direct the CLI to edit its disposable worktree.
 
 The phase log names the backend that actually ran, so a review that quietly
 used the wrong one is visible in the dashboard:
@@ -367,9 +377,10 @@ Two consequences worth knowing:
 
 | Env | Default | Meaning |
 |---|---|---|
-| `HARNESS_PROVIDER` | `deepseek` | Agent backend: `deepseek`, `claude`, or `codex` (see [Agent backends](#agent-backends)) |
+| `HARNESS_PROVIDER` | `deepseek` | Agent backend: `deepseek`, `claude`, `codex`, or `agy` (see [Agent backends](#agent-backends)) |
 | `HARNESS_CLAUDE_MODEL` | `sonnet` | Model for the `claude` backend |
 | `HARNESS_CODEX_MODEL` | `gpt-5.5` | Model for the `codex` backend |
+| `HARNESS_AGY_MODEL` | `gemini-3.8-flash` | Model for the `agy` backend |
 | `HARNESS_CODE_REVIEW` | `1` | Code review axis: code agents (one per ~20 changed files) plus a verify agent for BLOCKER/MAJOR, and inline comments. `0` switches it off — the review then reads **Code: not reviewed** |
 | `DEEPSEEK_API_KEY` | — | DeepSeek API key (only required by the `deepseek` backend) |
 | `DSH_MODEL` | `deepseek-v4-flash` | Model for the `deepseek` backend (agent + claim extraction) |

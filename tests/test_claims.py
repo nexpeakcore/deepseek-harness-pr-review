@@ -158,6 +158,9 @@ def test_select_chat_picks_the_backend_named_by_the_provider():
     assert select_chat(" CLAUDE ") is claude_cli.chat
     from src import codex_cli
     assert select_chat("codex") is codex_cli.chat
+    from src import agy_cli
+    assert select_chat("agy") is agy_cli.chat
+    assert select_chat(" AGY ") is agy_cli.chat
 
 
 def test_extract_claims_uses_the_provider_backend(tmp_path, monkeypatch):
@@ -175,6 +178,27 @@ def test_extract_claims_uses_the_provider_backend(tmp_path, monkeypatch):
                 "files": [{"filename": "cli.py"}], "commits": []}
 
     claims = extract_claims(snapshot, {"provider": "claude", "model": "sonnet"},
+                            tmp_path)
+
+    assert [c["id"] for c in claims] == ["C1"]
+    assert claims[0]["source"] == "stated"
+
+
+def test_extract_claims_uses_the_agy_provider_backend(tmp_path, monkeypatch):
+    """Phase 2 must use agy when configured."""
+    from src import agy_cli
+    from src.claims import extract_claims
+
+    monkeypatch.setattr(
+        agy_cli, "run",
+        lambda prompt, **kw: '[{"id": "C1", "text": "adds a flag", '
+                             '"category": "feature"}]')
+    snapshot = {"title": "Add a --verbose flag",
+                "body": "This PR adds a --verbose flag to the CLI so that "
+                        "operators can see per-request timing in the log.",
+                "files": [{"filename": "cli.py"}], "commits": []}
+
+    claims = extract_claims(snapshot, {"provider": "agy", "model": "gemini-3.8-flash"},
                             tmp_path)
 
     assert [c["id"] for c in claims] == ["C1"]

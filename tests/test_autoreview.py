@@ -530,6 +530,19 @@ def test_autoreview_stops_before_polling_when_claude_is_missing(tmp_path, monkey
     assert "claude CLI is not on PATH" in capsys.readouterr().err
 
 
+def test_autoreview_stops_before_polling_when_agy_is_missing(tmp_path, monkeypatch, capsys):
+    from src import agy_cli
+    from src.autoreview import main
+
+    cfg = tmp_path / "autoreview.yml"
+    cfg.write_text("org: sample-org\nrepos:\n  sample-app: auto\n")
+    monkeypatch.setenv("HARNESS_PROVIDER", "agy")
+    monkeypatch.setattr(agy_cli, "available", lambda: False)
+
+    assert main(["--once", "--config", str(cfg)]) == 2
+    assert "agy CLI is not on PATH" in capsys.readouterr().err
+
+
 def test_autoreview_rejects_an_unknown_provider(tmp_path, monkeypatch, capsys):
     from src.autoreview import main
 

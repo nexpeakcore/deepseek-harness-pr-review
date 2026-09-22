@@ -469,6 +469,14 @@ def main(argv: list[str] | None = None) -> int:
                   f"— install Codex CLI. PATH was: {os.environ.get('PATH', '(unset)')}",
                   file=sys.stderr)
             return 2
+    if env.provider == "agy":
+        from src import agy_cli
+
+        if not agy_cli.available():
+            print(f"HARNESS_PROVIDER=agy but the agy CLI is not on PATH "
+                  f"— install Antigravity CLI. PATH was: {os.environ.get('PATH', '(unset)')}",
+                  file=sys.stderr)
+            return 2
     if not gh_available():
         print("gh CLI not installed or not authenticated (gh auth login)",
               file=sys.stderr)

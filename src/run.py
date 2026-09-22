@@ -70,6 +70,17 @@ def _doctor() -> int:
         else:
             print("✗ codex CLI not found on PATH — install Codex CLI")
             ok = False
+    elif cfg.provider == "agy":
+        print(f"✓ provider: agy (model {cfg.agy_model})")
+        from src import agy_cli
+
+        installed = agy_cli.version() if agy_cli.available() else ""
+        if installed:
+            print(f"✓ agy CLI installed ({installed})")
+            print("· the CLI carries its own credentials — no API key needed here")
+        else:
+            print("✗ agy CLI not found on PATH — install Antigravity CLI")
+            ok = False
     else:
         print(f"✓ provider: deepseek (model {cfg.model})")
         if cfg.api_key:

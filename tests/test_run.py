@@ -259,6 +259,37 @@ def test_doctor_no_gh(tmp_path, monkeypatch, capsys):
     assert "gh CLI not installed" in out
 
 
+def test_doctor_agy_ready(monkeypatch, capsys):
+    from src import agy_cli
+
+    monkeypatch.setenv("HARNESS_PROVIDER", "agy")
+    monkeypatch.setenv("HARNESS_AGY_MODEL", "gemini-3.8-flash")
+    monkeypatch.setattr("src.run.gh_available", lambda: True)
+    monkeypatch.setattr("src.run.run_gh", lambda args, **kw: {"login": "dev1"})
+    monkeypatch.setattr(agy_cli, "available", lambda: True)
+    monkeypatch.setattr(agy_cli, "version", lambda: "1.2.7")
+
+    code = main(["doctor"])
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "provider: agy (model gemini-3.8-flash)" in out
+    assert "agy CLI installed (1.2.7)" in out
+
+
+def test_doctor_agy_missing(monkeypatch, capsys):
+    from src import agy_cli
+
+    monkeypatch.setenv("HARNESS_PROVIDER", "agy")
+    monkeypatch.setattr("src.run.gh_available", lambda: True)
+    monkeypatch.setattr("src.run.run_gh", lambda args, **kw: {"login": "dev1"})
+    monkeypatch.setattr(agy_cli, "available", lambda: False)
+
+    code = main(["doctor"])
+    assert code == 1
+    out = capsys.readouterr().out
+    assert "agy CLI not found on PATH" in out
+
+
 def test_version_flag(monkeypatch, capsys):
     monkeypatch.setattr("run.importlib.metadata.version",
                         lambda name: "0.1.0")

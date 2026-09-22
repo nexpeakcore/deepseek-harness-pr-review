@@ -201,6 +201,9 @@ def select_chat(provider: str | None):
     if (provider or "").strip().lower() == "codex":
         from src import codex_cli
         return codex_cli.chat
+    if (provider or "").strip().lower() == "agy":
+        from src import agy_cli
+        return agy_cli.chat
     return _default_chat
 
 

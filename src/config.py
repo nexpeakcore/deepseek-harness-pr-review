@@ -32,7 +32,7 @@ _load_dotenv()
 
 # Agent backends. "deepseek" runs the Harness SDK against the DeepSeek API and
 # needs DEEPSEEK_API_KEY; CLI providers carry their own credentials.
-PROVIDERS = ("deepseek", "claude", "codex")
+PROVIDERS = ("deepseek", "claude", "codex", "agy")
 DEFAULT_PROVIDER = "deepseek"
 
 
@@ -45,6 +45,7 @@ class Config:
     provider: str = DEFAULT_PROVIDER
     claude_model: str = "sonnet"
     codex_model: str = "gpt-5.5"
+    agy_model: str = "gemini-3.8-flash"
     # The code axis costs one agent per ~20 changed files plus a verify agent,
     # roughly a third on top of a review. On by default; this is the off switch.
     code_review: bool = True
@@ -73,9 +74,11 @@ class Config:
         return {
             "provider": self.provider,
             "model": (self.claude_model if self.provider == "claude" else
-                      self.codex_model if self.provider == "codex" else self.model),
+                      self.codex_model if self.provider == "codex" else
+                      self.agy_model if self.provider == "agy" else self.model),
             "claude_model": self.claude_model,
             "codex_model": self.codex_model,
+            "agy_model": self.agy_model,
             "api_key": self.api_key,
             "base_url": self.base_url,
             "code_review": self.code_review,
@@ -92,6 +95,7 @@ def load_config() -> Config:
                  or DEFAULT_PROVIDER,
         claude_model=os.environ.get("HARNESS_CLAUDE_MODEL", "sonnet").strip() or "sonnet",
         codex_model=os.environ.get("HARNESS_CODEX_MODEL", "gpt-5.5").strip() or "gpt-5.5",
+        agy_model=os.environ.get("HARNESS_AGY_MODEL", "gemini-3.8-flash").strip() or "gemini-3.8-flash",
         code_review=os.environ.get("HARNESS_CODE_REVIEW", "1").strip().lower()
                     not in ("0", "false", "no", "off"),
     )

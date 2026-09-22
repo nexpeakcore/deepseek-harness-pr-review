@@ -57,6 +57,15 @@ def test_load_config_reads_the_codex_backend(monkeypatch):
     assert cfg.needs_deepseek_key is False
 
 
+def test_load_config_reads_the_agy_backend(monkeypatch):
+    monkeypatch.setenv("HARNESS_PROVIDER", " Agy ")
+    monkeypatch.setenv("HARNESS_AGY_MODEL", "gemini-3.8-flash")
+    cfg = load_config()
+    assert cfg.provider == "agy"
+    assert cfg.agy_model == "gemini-3.8-flash"
+    assert cfg.needs_deepseek_key is False
+
+
 def test_phase_cfg_resolves_the_model_for_the_active_provider(monkeypatch):
     monkeypatch.setenv("DSH_MODEL", "deepseek-v4-flash")
     monkeypatch.setenv("HARNESS_CLAUDE_MODEL", "opus")
@@ -72,3 +81,9 @@ def test_phase_cfg_resolves_the_model_for_the_active_provider(monkeypatch):
     monkeypatch.setenv("HARNESS_PROVIDER", "codex")
     monkeypatch.setenv("HARNESS_CODEX_MODEL", "gpt-5.5")
     assert load_config().phase_cfg()["model"] == "gpt-5.5"
+
+    monkeypatch.setenv("HARNESS_PROVIDER", "agy")
+    monkeypatch.setenv("HARNESS_AGY_MODEL", "gemini-3.8-flash")
+    agy = load_config().phase_cfg()
+    assert agy["model"] == "gemini-3.8-flash"
+    assert agy["provider"] == "agy"

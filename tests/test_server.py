@@ -828,3 +828,9 @@ def test_header_backend_follows_a_restart(tmp_path, monkeypatch):
     html = client.get("/").text
     assert "codex · <strong>gpt-5.5</strong>" in html
     assert "HARNESS_PROVIDER=codex, HARNESS_CODEX_MODEL=gpt-5.5" in html
+
+    monkeypatch.setenv("HARNESS_PROVIDER", "agy")
+    monkeypatch.setenv("HARNESS_AGY_MODEL", "gemini-3.8-flash")
+    html = client.get("/").text
+    assert "agy · <strong>gemini-3.8-flash</strong>" in html
+    assert "HARNESS_PROVIDER=agy, HARNESS_AGY_MODEL=gemini-3.8-flash" in html
