@@ -66,16 +66,29 @@ h2 { font-size: 16px; font-weight: 600; margin: 28px 0 10px; }
 .empty { color: var(--muted); padding: 12px 0; }
 
 /* ---------- repo cards ---------- */
-.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 14px; }
-.card { background: #fff; border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; }
-a.card { text-decoration: none; color: inherit; display: block; transition: border-color .15s; }
-a.card:hover { border-color: var(--navy); }
-a.card.auto { border-style: dashed; }
-.card h3 { font-size: 14px; font-weight: 600; margin: 0 0 6px; }
+.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 16px; }
+.card { background: #fff; border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; display: flex; flex-direction: column; justify-content: flex-start; transition: border-color .15s; }
+.card:hover { border-color: #cbd5e1; }
+.card.auto { border-style: dashed; }
+.card h3 { font-size: 14px; font-weight: 600; margin: 0 0 6px; display: flex; align-items: center; justify-content: space-between; }
+.card h3 a.repo-title { color: var(--fg); text-decoration: none; word-break: break-word; }
+.card h3 a.repo-title:hover { color: var(--blue); text-decoration: underline; }
 .card p { font-size: 13px; color: var(--muted); margin: 0; }
-.kpis { display: flex; gap: 16px; margin-top: 10px; font-size: 13px; }
+.kpis { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 10px; font-size: 13px; }
 .kpi.bad b { color: var(--red); }
 .kpi.warn b { color: var(--orange); }
+
+/* ---------- repo card PR list ---------- */
+.card-prs { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border); }
+.card-prs-header { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; color: var(--muted); margin-bottom: 8px; }
+.card-pr-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; max-height: 180px; overflow-y: auto; }
+.card-pr-item { display: flex; align-items: center; gap: 8px; font-size: 12px; padding: 6px 8px; border-radius: 6px; background: #f8fafc; border: 1px solid #edf2f7; }
+.card-pr-item:hover { background: #f1f5f9; }
+.card-pr-num { font-weight: 700; color: var(--blue); text-decoration: none; flex-shrink: 0; }
+.card-pr-num:hover { text-decoration: underline; }
+.card-pr-title { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--fg); }
+.card-pr-issues { font-size: 11px; font-weight: 600; color: var(--red); background: #fdecea; padding: 1px 6px; border-radius: 999px; flex-shrink: 0; white-space: nowrap; }
+.card-empty { font-size: 12px; color: var(--muted); font-style: italic; margin: 4px 0 0; }
 
 /* ---------- KPI row ---------- */
 .kpi-row { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 8px; }

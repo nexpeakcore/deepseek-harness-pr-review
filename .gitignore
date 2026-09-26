@@ -16,5 +16,6 @@ autoreview.lock
 autoreview.yml
 .agent-slots/
 dashboard.log
+web.log
 .env.bak.*
 autoreview.yml.bak.*

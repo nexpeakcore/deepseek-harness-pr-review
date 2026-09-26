@@ -254,3 +254,31 @@ def test_open_prs_reviewing_with_existing_findings(tmp_path):
         gh=lambda args, **kw: [{"number": 7, "title": "T7", "draft": False}])
     assert rows[0]["status"] == "reviewing"
     assert rows[0]["pid"] == os.getpid()
+
+
+def test_repo_open_summary_skips_merged_prs(tmp_path):
+    root = tmp_path / "sessions"
+    # PR 10: merged (has findings with 3 bugs, but not returned by gh)
+    _write_session(
+        root, "o", "r", 10, snapshot=SNAPSHOT,
+        findings={**EMPTY_FINDINGS,
+                  "claims": [{"id": "C1", "status": "FAIL", "evidence": [], "note": ""},
+                             {"id": "C2", "status": "FAIL", "evidence": [], "note": ""},
+                             {"id": "C3", "status": "FAIL", "evidence": [], "note": ""}]})
+    # PR 11: open (has findings with 1 bug)
+    _write_session(
+        root, "o", "r", 11, snapshot=SNAPSHOT,
+        findings={**EMPTY_FINDINGS,
+                  "claims": [{"id": "C4", "status": "FAIL", "evidence": [], "note": ""}]})
+
+    # GitHub only returns PR 11 because PR 10 is merged
+    fake_gh = lambda args, **kw: [{"number": 11, "title": "Feature 11", "draft": False}]
+    summary = metrics.repo_open_summary(root, "o", "r", gh=fake_gh)
+
+    assert summary["prs_total"] == 1
+    assert summary["bugs_total"] == 1  # ignores 3 bugs from merged PR 10
+    assert summary["issues_total"] == 1
+    assert len(summary["active_prs"]) == 1
+    assert summary["active_prs"][0]["pr"] == 11
+    assert summary["active_prs"][0]["status"] == "reviewed"
+

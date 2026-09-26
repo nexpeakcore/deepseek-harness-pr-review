@@ -225,31 +225,48 @@ def open_prs(session_root: Path, owner: str, repo: str, gh=None) -> list[dict]:
     session_dir = session_root / owner / repo
     seen = set()
     for p in prs:
-        n = int(p["number"])
+        if not isinstance(p, dict) or "number" not in p:
+            continue
+        try:
+            n = int(p["number"])
+        except (ValueError, TypeError):
+            continue
         seen.add(n)
         d = session_dir / f"pr-{n}"
         info = review_process_info(d)
         if info:  # lock sống → đang review/re-review (kể cả khi đã có findings)
             rec = pr_record(session_root, owner, repo, n) if (d / "findings.json").exists() else None
+            bugs = rec["bugs"] if rec else None
+            attention = rec["attention"] if rec else None
+            doc_errors = rec["doc_errors"] if rec else None
+            issues = (bugs + attention + doc_errors) if rec else None
             rows.append({
                 "pr": n, "title": p.get("title", ""),
                 "draft": bool(p.get("draft")),
                 "status": "reviewing", "rounds": None,
                 "pid": info["pid"],
                 "started_at": info["started_at"],
-                "bugs": rec["bugs"] if rec else None,
-                "doc_errors": rec["doc_errors"] if rec else None,
+                "bugs": bugs,
+                "attention": attention,
+                "doc_errors": doc_errors,
+                "issues": issues,
                 "unavailable": unavailable,
             })
         elif (d / "findings.json").exists():
             rec = pr_record(session_root, owner, repo, n)
+            bugs = rec["bugs"] if rec else 0
+            attention = rec["attention"] if rec else 0
+            doc_errors = rec["doc_errors"] if rec else 0
+            issues = bugs + attention + doc_errors
             rows.append({
                 "pr": n, "title": p.get("title", ""),
                 "draft": bool(p.get("draft")),
                 "status": "reviewed",
                 "rounds": _read_rounds(d),
-                "bugs": rec["bugs"] if rec else 0,
-                "doc_errors": rec["doc_errors"] if rec else 0,
+                "bugs": bugs,
+                "attention": attention,
+                "doc_errors": doc_errors,
+                "issues": issues,
                 "unavailable": unavailable,
             })
         elif d.exists():
@@ -260,7 +277,7 @@ def open_prs(session_root: Path, owner: str, repo: str, gh=None) -> list[dict]:
                 "pr": n, "title": p.get("title", ""),
                 "draft": bool(p.get("draft")),
                 "status": "failed", "rounds": None,
-                "bugs": None, "doc_errors": None,
+                "bugs": None, "attention": None, "doc_errors": None, "issues": None,
                 "unavailable": unavailable,
             })
         else:
@@ -268,7 +285,7 @@ def open_prs(session_root: Path, owner: str, repo: str, gh=None) -> list[dict]:
                 "pr": n, "title": p.get("title", ""),
                 "draft": bool(p.get("draft")),
                 "status": "not_reviewed", "rounds": None,
-                "bugs": None, "doc_errors": None,
+                "bugs": None, "attention": None, "doc_errors": None, "issues": None,
                 "unavailable": unavailable,
             })
 
@@ -280,17 +297,48 @@ def open_prs(session_root: Path, owner: str, repo: str, gh=None) -> list[dict]:
                 continue
             if (d / "findings.json").exists():
                 rec = pr_record(session_root, owner, repo, n)
+                bugs = rec["bugs"] if rec else 0
+                attention = rec["attention"] if rec else 0
+                doc_errors = rec["doc_errors"] if rec else 0
+                issues = bugs + attention + doc_errors
                 rows.append({
                     "pr": n, "title": "", "draft": False,
                     "status": "reviewed",
                     "rounds": _read_rounds(d),
-                    "bugs": rec["bugs"] if rec else 0,
-                    "doc_errors": rec["doc_errors"] if rec else 0,
+                    "bugs": bugs,
+                    "attention": attention,
+                    "doc_errors": doc_errors,
+                    "issues": issues,
                     "unavailable": True,
                 })
 
     rows.sort(key=lambda r: r["pr"], reverse=True)
     return rows
+
+
+def repo_open_summary(session_root: Path, owner: str, repo: str, gh=None) -> dict:
+    """Aggregate open PRs and issues for the repo card (skipping merged PRs)."""
+    rows = open_prs(session_root, owner, repo, gh=gh)
+    active = [p for p in rows if p["status"] in ("reviewing", "reviewed", "failed")]
+    reviewed = [p for p in rows if p["status"] == "reviewed"]
+
+    bugs_total = sum(p.get("bugs") or 0 for p in reviewed)
+    attention_total = sum(p.get("attention") or 0 for p in reviewed)
+    doc_errors_total = sum(p.get("doc_errors") or 0 for p in reviewed)
+    issues_total = bugs_total + attention_total + doc_errors_total
+
+    return {
+        "owner": owner,
+        "repo": repo,
+        "prs_total": len(active),
+        "bugs_total": bugs_total,
+        "attention_total": attention_total,
+        "doc_errors_total": doc_errors_total,
+        "issues_total": issues_total,
+        "active_prs": active,
+        "active_prs_count": len(active),
+        "has_data": len(active) > 0 or (session_root / owner / repo).is_dir(),
+    }
 
 
 def review_process_info(session_dir: Path) -> dict | None:

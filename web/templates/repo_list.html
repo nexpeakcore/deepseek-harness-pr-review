@@ -1,4 +1,7 @@
 {% extends "base.html" %}
+{% block head %}
+<meta http-equiv="refresh" content="30">
+{% endblock %}
 {% block content %}
 <h1>Repositories</h1>
 
@@ -9,22 +12,64 @@
 <div class="cards">
   {% for r in repos %}
     {% if r.has_data %}
-    <a class="card repo-card" href="/repos/{{ r.owner }}/{{ r.repo }}">
-      <h3>{{ r.owner }}/{{ r.repo }}</h3>
-      <div class="kpis">
-        <span class="kpi"><b>{{ r.prs_total }}</b> PRs</span>
-        <span class="kpi bad"><b>{{ r.bugs_total }}</b> bugs</span>
-        <span class="kpi warn"><b>{{ r.attention_total|default(0) }}</b> to look at</span>
-        <span class="kpi warn"><b>{{ r.doc_errors_total }}</b> doc errors</span>
+    <div class="card repo-card">
+      <div class="card-header">
+        <h3>
+          <a class="repo-title" href="/repos/{{ r.owner }}/{{ r.repo }}">{{ r.owner }}/{{ r.repo }}</a>
+          {% if r.mode == 'auto' %}<span class="tag auto">AUTO</span>{% endif %}
+        </h3>
+        <div class="kpis">
+          <span class="kpi"><b>{{ r.prs_total }}</b> PR{{ 's' if r.prs_total != 1 }}</span>
+          <span class="kpi {% if r.issues_total > 0 %}bad{% endif %}"><b>{{ r.issues_total }}</b> issue{{ 's' if r.issues_total != 1 }}</span>
+          <span class="kpi bad"><b>{{ r.bugs_total }}</b> bug{{ 's' if r.bugs_total != 1 }}</span>
+          <span class="kpi warn"><b>{{ r.attention_total|default(0) }}</b> to look at</span>
+          <span class="kpi warn"><b>{{ r.doc_errors_total }}</b> doc error{{ 's' if r.doc_errors_total != 1 }}</span>
+        </div>
       </div>
-    </a>
+      <div class="card-prs">
+        <div class="card-prs-header">PRs in review</div>
+        {% if r.active_prs %}
+        <ul class="card-pr-list">
+          {% for p in r.active_prs %}
+          <li class="card-pr-item">
+            <a class="card-pr-num" href="/repos/{{ r.owner }}/{{ r.repo }}/pr/{{ p.pr }}">#{{ p.pr }}</a>
+            <span class="card-pr-title" title="{{ p.title }}">{{ p.title or 'Untitled PR' }}</span>
+            {% if p.draft %}<span class="tag draft">DRAFT</span>{% endif %}
+            {% if p.status == 'reviewing' %}
+              <span class="verdict v-partial">Reviewing…</span>
+            {% elif p.status == 'reviewed' %}
+              <span class="verdict v-pass">Reviewed{% if p.rounds %} · {{ p.rounds }}r{% endif %}</span>
+              {% if p.issues is not none and p.issues > 0 %}
+                <span class="card-pr-issues" title="{{ p.bugs }} bugs, {{ p.attention|default(0) }} to look at, {{ p.doc_errors }} doc errors">{{ p.issues }} issue{{ 's' if p.issues != 1 }}</span>
+              {% endif %}
+            {% elif p.status == 'failed' %}
+              <span class="verdict v-fail">Failed</span>
+            {% endif %}
+          </li>
+          {% endfor %}
+        </ul>
+        {% else %}
+        <p class="muted card-empty">No open PRs in review (all merged or up to date)</p>
+        {% endif %}
+      </div>
+    </div>
     {% else %}
-    <a class="card repo-card auto" href="/repos/{{ r.owner }}/{{ r.repo }}">
-      <h3>{{ r.owner }}/{{ r.repo }} <span class="tag auto">AUTO</span></h3>
+    <div class="card repo-card auto">
+      <h3>
+        <a class="repo-title" href="/repos/{{ r.owner }}/{{ r.repo }}">{{ r.owner }}/{{ r.repo }}</a>
+        <span class="tag auto">AUTO</span>
+      </h3>
       <p class="muted">No reviews yet — new PRs are reviewed automatically.</p>
-    </a>
+    </div>
     {% endif %}
   {% endfor %}
 </div>
 {% endif %}
+
+<script>
+// Auto-refresh every 30s
+setTimeout(function() {
+  window.location.reload();
+}, 30000);
+</script>
 {% endblock %}

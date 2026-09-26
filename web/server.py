@@ -132,34 +132,89 @@ def _repo_status(names: list[str], org: str | None, *, refresh: bool = False) ->
     return fresh
 
 
+_OPEN_PRS_CACHE_TTL = 15.0  # seconds
+_open_prs_cache: dict[tuple[str, str, str], tuple[float, list[dict]]] = {}
+
+
 @app.get("/", response_class=HTMLResponse)
 def repo_list(request: Request):
     root = _session_root()
-    repos = []
-    for owner, repo in metrics.list_repos(root):
-        rec = metrics.repo_record(root, owner, repo)
-        if rec is not None:
-            rec["has_data"] = True
-            repos.append(rec)
-    repos.sort(key=lambda r: r["prs_total"], reverse=True)
+    import time
+    from concurrent.futures import ThreadPoolExecutor
+    from src.gh import run_gh
 
-    # merge auto-configured repos that have no review data yet
-    seen = {(r["owner"], r["repo"]) for r in repos}
+    session_repos = metrics.list_repos(root)
+
     path = _config_path()
+    auto_pairs = set()
     if path.exists():
         try:
             cfg = load_autoreview_config(path)
             for owner, repo in auto_repos(cfg):
-                if (owner, repo) not in seen:
-                    repos.append({
-                        "owner": owner, "repo": repo,
-                        "prs_total": 0, "bugs_total": 0,
-                        "attention_total": 0,
-                        "doc_errors_total": 0, "has_data": False,
-                        "mode": "auto",
-                    })
+                auto_pairs.add((owner, repo))
         except (ValueError, OSError):
             pass
+
+    all_pairs = list(session_repos)
+    for pair in auto_pairs:
+        if pair not in all_pairs:
+            all_pairs.append(pair)
+
+    now = time.monotonic()
+    root_str = str(root)
+    needed = [
+        pair for pair in all_pairs
+        if (root_str, pair[0], pair[1]) not in _open_prs_cache
+        or now - _open_prs_cache[(root_str, pair[0], pair[1])][0] >= _OPEN_PRS_CACHE_TTL
+    ]
+    if needed:
+        with ThreadPoolExecutor(max_workers=min(10, len(needed))) as ex:
+            def _fetch(p):
+                try:
+                    return p, metrics.open_prs(root, p[0], p[1], gh=run_gh)
+                except Exception:
+                    return p, []
+            for pair, rows in ex.map(_fetch, needed):
+                _open_prs_cache[(root_str, pair[0], pair[1])] = (now, rows)
+
+    repos = []
+    for owner, repo in all_pairs:
+        pr_rows = _open_prs_cache.get((root_str, owner, repo), (0, []))[1]
+        active_prs = [p for p in pr_rows if p["status"] in ("reviewing", "reviewed", "failed")]
+        reviewed_open = [p for p in pr_rows if p["status"] == "reviewed"]
+
+        bugs_total = sum(p.get("bugs") or 0 for p in reviewed_open)
+        attention_total = sum(p.get("attention") or 0 for p in reviewed_open)
+        doc_errors_total = sum(p.get("doc_errors") or 0 for p in reviewed_open)
+        issues_total = bugs_total + attention_total + doc_errors_total
+
+        has_session = (owner, repo) in session_repos
+        has_data = has_session or bool(active_prs)
+        mode = "auto" if (owner, repo) in auto_pairs else "manual"
+
+        repos.append({
+            "owner": owner,
+            "repo": repo,
+            "prs_total": len(active_prs),
+            "bugs_total": bugs_total,
+            "attention_total": attention_total,
+            "doc_errors_total": doc_errors_total,
+            "issues_total": issues_total,
+            "active_prs": active_prs,
+            "active_prs_count": len(active_prs),
+            "has_data": has_data,
+            "mode": mode,
+        })
+
+    repos.sort(
+        key=lambda r: (
+            1 if r["active_prs_count"] > 0 else 0,
+            r["issues_total"],
+            r["active_prs_count"],
+            1 if r["has_data"] else 0,
+        ),
+        reverse=True,
+    )
 
     return templates.TemplateResponse(
         request, "repo_list.html", {"repos": repos})

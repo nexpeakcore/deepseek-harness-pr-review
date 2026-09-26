@@ -834,3 +834,62 @@ def test_header_backend_follows_a_restart(tmp_path, monkeypatch):
     html = client.get("/").text
     assert "agy · <strong>gemini-3.8-flash</strong>" in html
     assert "HARNESS_PROVIDER=agy, HARNESS_AGY_MODEL=gemini-3.8-flash" in html
+
+
+def test_repo_list_shows_open_prs_and_ignores_merged_sessions(tmp_path, monkeypatch):
+    sessions = tmp_path / "sessions"
+    monkeypatch.setenv("DSH_SESSION_ROOT", str(sessions))
+
+    # PR 10: merged (has 5 bugs in findings, but GitHub says it is no longer open)
+    _write_session(
+        sessions, "sample-org", "sample-app", 10,
+        snapshot={**SNAPSHOT, "pr": 10, "title": "Old merged PR"},
+        findings={
+            **EMPTY_FINDINGS,
+            "claims": [{"id": f"C{i}", "status": "FAIL", "evidence": [], "note": ""}
+                       for i in range(5)],
+        })
+
+    # PR 11: open and reviewed (has 1 bug in findings)
+    _write_session(
+        sessions, "sample-org", "sample-app", 11,
+        snapshot={**SNAPSHOT, "pr": 11, "title": "Active feature PR"},
+        findings={
+            **EMPTY_FINDINGS,
+            "claims": [{"id": "C10", "status": "FAIL", "evidence": [], "note": ""}],
+        })
+
+    # GitHub only returns PR 11 as state=open
+    def fake_gh(args, **kw):
+        if "pulls" in args[1]:
+            return [{"number": 11, "title": "Active feature PR", "draft": False}]
+        return []
+
+    monkeypatch.setattr("src.gh.run_gh", fake_gh)
+
+    client = TestClient(app)
+    resp = client.get("/")
+    assert resp.status_code == 200
+    html = resp.text
+
+    # Repo card contains active PR 11, not merged PR 10
+    assert "#11" in html
+    assert "Active feature PR" in html
+    assert "#10" not in html
+    assert "Old merged PR" not in html
+
+    # KPIs count only the open PR: 1 PR, 1 issue, 1 bug (not 6 bugs)
+    assert "<b>1</b> PR" in html
+    assert "<b>1</b> issue" in html
+    assert "<b>1</b> bug" in html
+    assert "<b>6</b>" not in html
+
+
+def test_repo_list_has_30s_refresh(tmp_path, monkeypatch):
+    monkeypatch.setenv("DSH_SESSION_ROOT", str(tmp_path / "sessions"))
+    client = TestClient(app)
+    resp = client.get("/")
+    assert resp.status_code == 200
+    assert '<meta http-equiv="refresh" content="30">' in resp.text
+    assert "30000" in resp.text
+
