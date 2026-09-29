@@ -364,7 +364,33 @@ def main(argv: list[str] | None = None) -> int:
                         help="mode for --add-repo (default: auto)")
     parser.add_argument("--repos", action="store_true",
                         help="list configured + org repos with modes")
+    parser.add_argument("--stop", action="store_true",
+                        help="stop running autoreview daemon")
+    parser.add_argument("--status", action="store_true",
+                        help="show status of autoreview daemon")
     args = parser.parse_args(argv)
+
+    if args.stop:
+        from src.review_proc import stop_autoreview
+        res = stop_autoreview(args.config.parent / "autoreview.lock" if args.config else LOCK_PATH)
+        print(res["message"])
+        return 0 if res["ok"] else 1
+
+    if args.status:
+        lock_file = args.config.parent / "autoreview.lock" if args.config else LOCK_PATH
+        if lock_file.exists():
+            try:
+                pid = int(lock_file.read_text().strip() or "0")
+            except (ValueError, OSError):
+                pid = 0
+            from src.review_proc import pid_alive
+            if pid > 0 and pid_alive(pid):
+                print(f"autoreview is running (PID {pid})")
+                return 0
+            print("autoreview is not running (stale lock exists)")
+            return 1
+        print("autoreview is not running")
+        return 0
 
     if args.add_repo:
         from src.repo_ref import parse_repo

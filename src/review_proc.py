@@ -22,6 +22,19 @@ EXIT_TIMEOUT = 124  # same convention as timeout(1)
 EXIT_SPAWN_FAILED = 125
 
 
+def pid_alive(pid: int) -> bool:
+    """True if pid corresponds to an existing OS process."""
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
 def review_lock_alive(lock: Path) -> bool:
     """True if review.lock records a PID that is still running.
 
@@ -37,15 +50,323 @@ def review_lock_alive(lock: Path) -> bool:
         pid = int(json.loads(lock.read_text()).get("pid", 0))
     except (ValueError, OSError, AttributeError):
         return False
-    if pid <= 0:
-        return False
+    return pid_alive(pid)
+
+
+def _read_last_log_line(path: Path, max_bytes: int = 4096) -> str:
+    """Read the last non-empty line of a log file without reading the whole file."""
+    if not path.exists():
+        return ""
     try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
+        size = path.stat().st_size
+        if size == 0:
+            return ""
+        with open(path, "r", errors="replace") as f:
+            if size > max_bytes:
+                f.seek(size - max_bytes)
+            lines = [l.strip() for l in f.readlines() if l.strip()]
+            if lines:
+                return lines[-1]
+    except OSError:
+        pass
+    return ""
+
+
+def find_process_children(parent_pid: int) -> list[int]:
+    """Recursively find all child PIDs of parent_pid."""
+    children: list[int] = []
+    try:
+        proc = subprocess.run(
+            ["pgrep", "-P", str(parent_pid)],
+            capture_output=True, text=True, check=False)
+        if proc.returncode == 0:
+            for line in proc.stdout.splitlines():
+                line = line.strip()
+                if line.isdigit():
+                    cpid = int(line)
+                    children.extend(find_process_children(cpid))
+                    children.append(cpid)
+            return children
+    except (FileNotFoundError, OSError):
+        pass
+
+    try:
+        proc = subprocess.run(
+            ["ps", "-o", "pid=", "--ppid", str(parent_pid)],
+            capture_output=True, text=True, check=False)
+        if proc.returncode == 0:
+            for line in proc.stdout.splitlines():
+                line = line.strip()
+                if line.isdigit():
+                    cpid = int(line)
+                    children.extend(find_process_children(cpid))
+                    children.append(cpid)
+    except (FileNotFoundError, OSError):
+        pass
+    return children
+
+
+def stop_process_by_pid(pid: int, timeout: float = 2.0) -> bool:
+    """Gracefully terminate a process and its children with SIGTERM, falling back to SIGKILL."""
+    import signal
+    import time
+
+    if not pid_alive(pid):
         return True
-    return True
+
+    children = find_process_children(pid)
+    all_pids = children + [pid]
+
+    for p in all_pids:
+        try:
+            os.kill(p, signal.SIGTERM)
+        except (ProcessLookupError, PermissionError):
+            pass
+
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if not any(pid_alive(p) for p in all_pids):
+            return True
+        time.sleep(0.05)
+
+    for p in all_pids:
+        if pid_alive(p):
+            try:
+                os.kill(p, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
+
+    time.sleep(0.05)
+    return not pid_alive(pid)
+
+
+def format_elapsed(seconds: int | None) -> str:
+    """Format seconds into human-readable elapsed duration (e.g., 2m 14s)."""
+    if seconds is None or seconds < 0:
+        return "—"
+    if seconds < 60:
+        return f"{seconds}s"
+    minutes = seconds // 60
+    rem_sec = seconds % 60
+    if minutes < 60:
+        return f"{minutes}m {rem_sec:02d}s"
+    hours = minutes // 60
+    rem_min = minutes % 60
+    return f"{hours}h {rem_min:02d}m"
+
+
+def list_running_processes(session_root: Path,
+                           autoreview_lock: Path | None = None) -> list[dict]:
+    """Find all running review processes and background autoreview daemon."""
+    from datetime import datetime
+    import time
+
+    results = []
+    # 1. Running reviews
+    if session_root.exists():
+        for lock in sorted(session_root.glob("*/*/pr-*/review.lock")):
+            try:
+                meta = json.loads(lock.read_text())
+                pid = int(meta.get("pid", 0))
+                started_at = meta.get("started_at", "")
+            except (ValueError, OSError, json.JSONDecodeError, AttributeError):
+                continue
+            if not pid_alive(pid):
+                continue
+
+            session_dir = lock.parent
+            pr_dir_name = session_dir.name
+            repo_name = session_dir.parent.name
+            owner_name = session_dir.parent.parent.name
+            pr_num = int(pr_dir_name.split("-")[1]) if "-" in pr_dir_name else 0
+
+            elapsed = None
+            if started_at:
+                try:
+                    st = datetime.strptime(started_at, "%Y-%m-%dT%H:%M:%S")
+                    elapsed = int((datetime.now() - st).total_seconds())
+                except ValueError:
+                    pass
+
+            log_path = session_dir / "review.log"
+            last_log = _read_last_log_line(log_path)
+
+            results.append({
+                "pid": pid,
+                "type": "review",
+                "target": f"{owner_name}/{repo_name}#{pr_num}",
+                "owner": owner_name,
+                "repo": repo_name,
+                "pr": pr_num,
+                "started_at": started_at,
+                "elapsed_seconds": elapsed,
+                "log_path": log_path,
+                "last_log": last_log,
+                "lock_path": lock,
+            })
+
+    # 2. Autoreview daemon
+    ar_lock = autoreview_lock or Path("autoreview.lock")
+    if ar_lock.exists():
+        try:
+            pid = int(ar_lock.read_text().strip())
+        except (ValueError, OSError):
+            pid = 0
+        if pid_alive(pid):
+            try:
+                mtime = ar_lock.stat().st_mtime
+                elapsed = int(time.time() - mtime)
+                started_at = datetime.fromtimestamp(mtime).strftime("%Y-%m-%dT%H:%M:%S")
+            except OSError:
+                elapsed = None
+                started_at = ""
+            log_path = ar_lock.parent / "autoreview.log"
+            last_log = _read_last_log_line(log_path)
+            results.append({
+                "pid": pid,
+                "type": "autoreview",
+                "target": "daemon",
+                "owner": None,
+                "repo": None,
+                "pr": None,
+                "started_at": started_at,
+                "elapsed_seconds": elapsed,
+                "log_path": log_path,
+                "last_log": last_log,
+                "lock_path": ar_lock,
+            })
+
+    results.sort(key=lambda r: (r["type"], str(r["target"])))
+    return results
+
+
+def stop_review(session_root: Path, owner: str, repo: str, pr: int) -> dict:
+    """Stop the review process for a given PR and remove the lock."""
+    lock = session_root / owner / repo / f"pr-{pr}" / "review.lock"
+    if not lock.exists():
+        return {"ok": False, "message": f"No review running for {owner}/{repo}#{pr}"}
+    try:
+        meta = json.loads(lock.read_text())
+        pid = int(meta.get("pid", 0))
+    except (ValueError, OSError, json.JSONDecodeError, AttributeError):
+        pid = 0
+
+    if pid <= 0 or not pid_alive(pid):
+        try:
+            lock.unlink()
+        except OSError:
+            pass
+        return {
+            "ok": True,
+            "stale": True,
+            "message": f"Cleaned up stale review lock for {owner}/{repo}#{pr} (process was not running)",
+        }
+
+    log_path = session_root / owner / repo / f"pr-{pr}" / "review.log"
+    try:
+        with open(log_path, "a") as f:
+            f.write("\n[harness] review stopped by user\n")
+    except OSError:
+        pass
+
+    stop_process_by_pid(pid)
+    try:
+        if lock.exists():
+            lock.unlink()
+    except OSError:
+        pass
+
+    return {
+        "ok": True,
+        "pid": pid,
+        "message": f"Stopped review for {owner}/{repo}#{pr} (PID {pid})",
+    }
+
+
+def stop_autoreview(lock_path: Path = Path("autoreview.lock")) -> dict:
+    """Stop the running autoreview process and remove its lock."""
+    if not lock_path.exists():
+        return {"ok": False, "message": "autoreview is not running"}
+    try:
+        pid = int(lock_path.read_text().strip())
+    except (ValueError, OSError):
+        pid = 0
+
+    if pid <= 0 or not pid_alive(pid):
+        try:
+            lock_path.unlink()
+        except OSError:
+            pass
+        return {
+            "ok": True,
+            "stale": True,
+            "message": "Cleaned up stale autoreview.lock (process was not running)",
+        }
+
+    log_path = lock_path.parent / "autoreview.log"
+    try:
+        with open(log_path, "a") as f:
+            f.write("\n[autoreview] stopped by user\n")
+    except OSError:
+        pass
+
+    stop_process_by_pid(pid)
+    try:
+        if lock_path.exists():
+            lock_path.unlink()
+    except OSError:
+        pass
+
+    return {
+        "ok": True,
+        "pid": pid,
+        "message": f"Stopped autoreview (PID {pid})",
+    }
+
+
+def stop_by_pid(session_root: Path, pid: int,
+                autoreview_lock: Path = Path("autoreview.lock")) -> dict:
+    """Stop a process by its PID, automatically detecting PR reviews or autoreview."""
+    if session_root.exists():
+        for lock in session_root.glob("*/*/pr-*/review.lock"):
+            try:
+                meta = json.loads(lock.read_text())
+                if int(meta.get("pid", 0)) == pid:
+                    pr_dir_name = lock.parent.name
+                    repo_name = lock.parent.parent.name
+                    owner_name = lock.parent.parent.parent.name
+                    pr_num = int(pr_dir_name.split("-")[1])
+                    return stop_review(session_root, owner_name, repo_name, pr_num)
+            except (ValueError, OSError, json.JSONDecodeError, AttributeError):
+                continue
+
+    if autoreview_lock.exists():
+        try:
+            if int(autoreview_lock.read_text().strip()) == pid:
+                return stop_autoreview(autoreview_lock)
+        except (ValueError, OSError):
+            pass
+
+    if not pid_alive(pid):
+        return {"ok": False, "message": f"Process {pid} is not running"}
+    stop_process_by_pid(pid)
+    return {"ok": True, "pid": pid, "message": f"Stopped process {pid}"}
+
+
+def stop_all_processes(session_root: Path,
+                       autoreview_lock: Path = Path("autoreview.lock")) -> list[dict]:
+    """Stop all active review processes and autoreview daemon."""
+    running = list_running_processes(session_root, autoreview_lock)
+    results = []
+    for p in running:
+        if p["type"] == "review":
+            res = stop_review(session_root, p["owner"], p["repo"], p["pr"])
+        elif p["type"] == "autoreview":
+            res = stop_autoreview(p["lock_path"])
+        else:
+            res = stop_by_pid(session_root, p["pid"], autoreview_lock)
+        results.append(res)
+    return results
 
 
 def build_argv(owner: str, repo: str, n: int, *, force: bool = True,

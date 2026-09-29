@@ -13,6 +13,9 @@
   <h2>Reviewing… <span class="muted">(PID {{ review_pid }})</span></h2>
   <p class="muted">A review session is running for this PR. The log below
   updates live; the page reloads automatically when the review finishes.</p>
+  <button class="tab-btn danger" id="stop-review-btn"
+          onclick="stopReview({{ pr_info.pr }}, this)">Stop review</button>
+  <div id="stop-msg" class="review-msg"></div>
 </div>
 {% elif failed %}
 <div class="config-block">
@@ -60,6 +63,16 @@
   {% set d = detail.pr.doc_breakdown %}
   · Docs = {{ d.wrong }} WRONG + {{ d.fabricated }} FABRICATED + {{ d.stale }} STALE
 </p>
+{% if reviewing %}
+<div class="config-block">
+  <h2>Re-reviewing… <span class="muted">(PID {{ review_pid }})</span></h2>
+  <p class="muted">A review session is running for this PR. The log below
+  updates live; the page reloads automatically when the review finishes.</p>
+  <button class="tab-btn danger" id="stop-review-btn"
+          onclick="stopReview({{ detail.pr.pr }}, this)">Stop review</button>
+  <div id="stop-msg" class="review-msg"></div>
+</div>
+{% endif %}
 
 <div class="tabs">
   <button class="tab-btn active" onclick="showTab('tab-code', this)">Code ({{ detail.code|length }})</button>
@@ -228,6 +241,40 @@ async function triggerReview(pr, btn) {
     alert("network error: " + e);
     btn.textContent = original;
     btn.disabled = false;
+  }
+}
+
+async function stopReview(pr, btn) {
+  if (btn.disabled) return;
+  btn.disabled = true;
+  const original = btn.textContent;
+  btn.textContent = "Stopping…";
+  const msgEl = document.getElementById("stop-msg");
+  try {
+    const r = await fetch(`/api/repos/{{ repo_owner }}/{{ repo_name }}/pr/${pr}/review/stop`,
+                          {method: "POST"});
+    const data = await r.json().catch(() => ({}));
+    if (r.ok) {
+      if (msgEl) {
+        msgEl.textContent = data.message || "Review stopped";
+        msgEl.className = "review-msg ok";
+      }
+      setTimeout(() => location.reload(), 1500);
+    } else {
+      if (msgEl) {
+        msgEl.textContent = data.detail || "Failed to stop review";
+        msgEl.className = "review-msg warn";
+      }
+      btn.disabled = false;
+      btn.textContent = original;
+    }
+  } catch (e) {
+    if (msgEl) {
+      msgEl.textContent = "Error: " + e;
+      msgEl.className = "review-msg warn";
+    }
+    btn.disabled = false;
+    btn.textContent = original;
   }
 }
 

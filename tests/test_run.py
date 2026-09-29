@@ -607,3 +607,111 @@ def test_review_prints_phase_progress(tmp_path, monkeypatch, capsys):
     assert "[1/5] snapshot — 1 files, 1 commits" in out
     assert "[2/5] claims — 1 claims from description" in out
     assert "[5/5] report — 1 claims, 0 docs, 0 impact" in out
+
+
+def test_cli_help_shows_ps_and_stop(capsys):
+    import pytest
+    from src.run import main
+
+    with pytest.raises(SystemExit) as exc:
+        main(["--help"])
+    assert exc.value.code == 0
+    out = capsys.readouterr().out
+    assert "ps" in out
+    assert "stop" in out
+    assert "list running review and background processes" in out
+
+
+def test_ps_command_empty(monkeypatch, capsys):
+    from src.run import main
+
+    monkeypatch.setattr("src.run.list_running_processes", lambda *a, **k: [])
+    code = main(["ps"])
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "No active review or autoreview processes." in out
+
+
+def test_ps_command_with_processes(monkeypatch, capsys):
+    from src.run import main
+
+    procs = [{
+        "pid": 12345,
+        "type": "review",
+        "target": "demo/app#7",
+        "elapsed_seconds": 75,
+        "last_log": "[4/5] verify — starting agents",
+    }]
+    monkeypatch.setattr("src.run.list_running_processes", lambda *a, **k: procs)
+    code = main(["ps"])
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "12345" in out
+    assert "review" in out
+    assert "demo/app#7" in out
+    assert "1m 15s" in out
+    assert "[4/5] verify — starting agents" in out
+
+
+def test_list_command_alias(monkeypatch, capsys):
+    from src.run import main
+
+    monkeypatch.setattr("src.run.list_running_processes", lambda *a, **k: [])
+    code = main(["list"])
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "No active review or autoreview processes." in out
+
+
+def test_stop_command_by_pid(monkeypatch, capsys):
+    from src.run import main
+
+    monkeypatch.setattr("src.run.stop_by_pid",
+                        lambda s, pid: {"ok": True, "message": f"Stopped process {pid}"})
+    code = main(["stop", "12345"])
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "Stopped process 12345" in out
+
+
+def test_stop_command_by_pr(monkeypatch, capsys):
+    from src.run import main
+
+    stopped = []
+    monkeypatch.setattr("src.run.stop_review",
+                        lambda s, o, r, p: stopped.append((o, r, p)) or {"ok": True, "message": f"Stopped review {o}/{r}#{p}"})
+    code = main(["stop", "demo/app#7"])
+    assert code == 0
+    assert stopped == [("demo", "app", 7)]
+    assert "Stopped review demo/app#7" in capsys.readouterr().out
+
+
+def test_stop_command_all(monkeypatch, capsys):
+    from src.run import main
+
+    monkeypatch.setattr("src.run.stop_all_processes",
+                        lambda s: [{"ok": True, "message": "Stopped demo/app#7"}])
+    code = main(["stop", "--all"])
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "Stopped 1 process:" in out
+    assert "Stopped demo/app#7" in out
+
+
+def test_stop_command_no_target_shows_running(monkeypatch, capsys):
+    from src.run import main
+
+    procs = [{
+        "pid": 12345,
+        "type": "review",
+        "target": "demo/app#7",
+        "elapsed_seconds": 30,
+        "last_log": "",
+    }]
+    monkeypatch.setattr("src.run.list_running_processes", lambda *a, **k: procs)
+    code = main(["stop"])
+    assert code == 1
+    out = capsys.readouterr().out
+    assert "usage: harness-pr-review stop" in out
+    assert "12345" in out
+

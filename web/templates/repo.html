@@ -61,10 +61,15 @@ reviewed automatically. Click <b>Review now</b> to run the first one.</p>{% endi
       {% endif %}
       <td>
         <span class="review-cell">
-          <button class="tab-btn review-btn" data-pr="{{ p.pr }}"
-                  onclick="triggerReview({{ p.pr }}, this)">
-            {% if p.status == 'reviewed' %}Re-review{% else %}Review now{% endif %}
-          </button>
+          {% if p.status == 'reviewing' %}
+            <button class="tab-btn danger" data-pr="{{ p.pr }}"
+                    onclick="stopReview({{ p.pr }}, this)">Stop</button>
+          {% else %}
+            <button class="tab-btn review-btn" data-pr="{{ p.pr }}"
+                    onclick="triggerReview({{ p.pr }}, this)">
+              {% if p.status == 'reviewed' %}Re-review{% else %}Review now{% endif %}
+            </button>
+          {% endif %}
           <a class="gh-link" target="_blank" rel="noopener"
              href="https://github.com/{{ repo.owner }}/{{ repo.repo }}/pull/{{ p.pr }}">Open ↗</a>
         </span>
@@ -149,6 +154,40 @@ async function triggerReview(pr, btn) {
     alert("network error: " + e);
     btn.textContent = original;
     btn.disabled = false;
+  }
+}
+
+async function stopReview(pr, btn) {
+  if (btn.disabled) return;
+  btn.disabled = true;
+  const original = btn.textContent;
+  btn.textContent = "Stopping…";
+  const msgEl = document.getElementById("review-msg-" + pr);
+  try {
+    const r = await fetch(`/api/repos/{{ repo.owner }}/{{ repo.repo }}/pr/${pr}/review/stop`,
+                          {method: "POST"});
+    const data = await r.json().catch(() => ({}));
+    if (r.ok) {
+      if (msgEl) {
+        msgEl.textContent = data.message || "Review stopped";
+        msgEl.className = "review-msg ok";
+      }
+      setTimeout(() => location.reload(), 1500);
+    } else {
+      if (msgEl) {
+        msgEl.textContent = data.detail || "Failed to stop review";
+        msgEl.className = "review-msg warn";
+      }
+      btn.disabled = false;
+      btn.textContent = original;
+    }
+  } catch (e) {
+    if (msgEl) {
+      msgEl.textContent = "Error: " + e;
+      msgEl.className = "review-msg warn";
+    }
+    btn.disabled = false;
+    btn.textContent = original;
   }
 }
 

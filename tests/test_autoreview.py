@@ -648,3 +648,42 @@ def test_seen_heads_expire_when_the_diff_moves_on(tmp_path):
 
     assert decide_pr(root, "o", "r", 5, "rebased",
                      fetch_files=lambda *a: FILES) == "RE-RUN"
+
+
+def test_autoreview_cli_stop(tmp_path, monkeypatch, capsys):
+    from src.autoreview import main
+
+    cfg = tmp_path / "autoreview.yml"
+    cfg.write_text("org: test\n")
+    lock = tmp_path / "autoreview.lock"
+    lock.write_text("12345")
+
+    stopped = []
+    monkeypatch.setattr("src.review_proc.stop_autoreview",
+                        lambda l: stopped.append(l) or {"ok": True, "message": "Stopped autoreview (PID 12345)"})
+
+    code = main(["--config", str(cfg), "--stop"])
+    assert code == 0
+    assert len(stopped) == 1
+    assert "Stopped autoreview (PID 12345)" in capsys.readouterr().out
+
+
+def test_autoreview_cli_status(tmp_path, monkeypatch, capsys):
+    import os
+    from src.autoreview import main
+
+    cfg = tmp_path / "autoreview.yml"
+    cfg.write_text("org: test\n")
+    lock = tmp_path / "autoreview.lock"
+
+    # 1. Not running
+    code = main(["--config", str(cfg), "--status"])
+    assert code == 0
+    assert "autoreview is not running" in capsys.readouterr().out
+
+    # 2. Running
+    lock.write_text(str(os.getpid()))
+    code = main(["--config", str(cfg), "--status"])
+    assert code == 0
+    assert f"autoreview is running (PID {os.getpid()})" in capsys.readouterr().out
+

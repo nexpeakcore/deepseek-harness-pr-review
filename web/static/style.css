@@ -176,6 +176,7 @@ tr.failed td { background: #fdecea; }
 
 .review-msg { margin-top: 6px; font-size: 12px; color: var(--muted); }
 .review-msg.warn { color: var(--orange); }
+.review-msg.ok { color: var(--green); }
 .gh-link { font-size: 13px; color: var(--blue); text-decoration: none; margin-left: 10px; }
 .gh-link:hover { text-decoration: underline; }
 .review-cell .gh-link { margin-left: 0; }

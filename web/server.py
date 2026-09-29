@@ -13,7 +13,8 @@ from src.autoreview_config import auto_repos, list_repos, remove_repo, set_repo_
 from src.autoreview_config import repo_mode as config_repo_mode
 from src.config import PROVIDERS, load_config
 from src.repo_check import ACTIONABLE, OK, UNKNOWN, check_repo, check_repos
-from src.review_proc import EXIT_TIMEOUT, run_review
+from src.review_proc import (EXIT_TIMEOUT, list_running_processes,
+                             run_review, stop_review)
 from web import metrics
 
 BASE = Path(__file__).resolve().parent
@@ -345,10 +346,14 @@ def pr_page(request: Request, owner: str, repo: str, pr: int):
             {"detail": None, "pr_info": pr_info, "not_reviewed": True,
              "reviewing": False, "failed": failed,
              "repo_owner": owner, "repo_name": repo})
+    session_dir = _session_root() / owner / repo / f"pr-{pr}"
+    reviewing = metrics.review_process_info(session_dir)
     return templates.TemplateResponse(
         request, "pr.html",
         {"detail": detail, "pr_info": None, "not_reviewed": False,
-         "reviewing": False, "failed": False,
+         "reviewing": bool(reviewing),
+         "review_pid": reviewing["pid"] if reviewing else None,
+         "failed": False,
          "repo_owner": owner, "repo_name": repo})
 
 
@@ -588,6 +593,22 @@ def trigger_review(owner: str, repo: str, pr: int):
                    f"check server log / sessions/{owner}/{repo}/pr-{pr}/report.md")
     return {"ok": True, "exit": exit_code,
             "report": f"sessions/{owner}/{repo}/pr-{pr}/report.md"}
+
+
+@app.post("/api/repos/{owner}/{repo}/pr/{pr}/review/stop")
+def stop_review_api(owner: str, repo: str, pr: int):
+    """Stop an active review for a PR."""
+    res = stop_review(_session_root(), owner, repo, pr)
+    if not res["ok"]:
+        raise HTTPException(status_code=404, detail=res["message"])
+    return res
+
+
+@app.get("/api/processes")
+def list_processes_api():
+    """List all running review and background processes."""
+    return {"processes": list_running_processes(_session_root())}
+
 
 
 if __name__ == "__main__":

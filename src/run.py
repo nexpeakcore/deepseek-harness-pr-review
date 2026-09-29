@@ -12,7 +12,9 @@ from pathlib import Path
 from src.config import PROVIDERS, load_config
 from src.gh import gh_available, run_gh
 from src.claims import all_inferred
-from src.review_proc import review_lock_alive
+from src.review_proc import (format_elapsed, list_running_processes,
+                             review_lock_alive, stop_all_processes,
+                             stop_by_pid, stop_review, stop_autoreview)
 from src.human_gate import run_gate
 from src.synthesize import (build_comment, build_ping, build_report,
                             find_report_comment, post_comment, post_ping)
@@ -315,7 +317,120 @@ def _update() -> int:
     return 0
 
 
+def _setup_signal_handler() -> None:
+    """Ensure SIGTERM / SIGINT raise SystemExit so 'finally' blocks execute."""
+    import signal
+
+    def _handler(signum, frame):
+        sys.exit(128 + signum)
+
+    try:
+        signal.signal(signal.SIGTERM, _handler)
+        signal.signal(signal.SIGINT, _handler)
+    except (ValueError, OSError):
+        pass
+
+
+def _cmd_ps(session_root: Path) -> int:
+    """List running review processes and background autoreview daemon."""
+    procs = list_running_processes(session_root)
+    if not procs:
+        print("No active review or autoreview processes.")
+        return 0
+
+    print(f"{'PID':<8} {'TYPE':<12} {'TARGET':<26} {'ELAPSED':<10} CURRENT PHASE / LOG")
+    for p in procs:
+        pid = str(p["pid"])
+        ptype = p["type"]
+        target = str(p["target"])
+        elapsed = format_elapsed(p["elapsed_seconds"])
+        last_log = p.get("last_log") or ""
+        if len(last_log) > 60:
+            last_log = last_log[:57] + "..."
+        print(f"{pid:<8} {ptype:<12} {target:<26} {elapsed:<10} {last_log}")
+    return 0
+
+
+def _cmd_ps_entry(argv: list[str], session_root: Path) -> int:
+    parser = argparse.ArgumentParser(
+        prog="harness-pr-review ps",
+        description="List currently running review and background processes.")
+    parser.parse_args(argv)
+    return _cmd_ps(session_root)
+
+
+def _cmd_stop(argv: list[str], session_root: Path) -> int:
+    parser = argparse.ArgumentParser(
+        prog="harness-pr-review stop",
+        description="Stop running review or background processes.")
+    parser.add_argument("target", nargs="?",
+                        help="PID, owner/repo, owner/repo#n, or 'autoreview'")
+    parser.add_argument("pr_number", nargs="?", type=int,
+                        help="PR number (if target is owner/repo)")
+    parser.add_argument("--all", action="store_true",
+                        help="stop all running review and background processes")
+    args = parser.parse_args(argv)
+
+    if args.all or args.target in ("all", "--all"):
+        stopped = stop_all_processes(session_root)
+        if not stopped:
+            print("No running processes to stop.")
+            return 0
+        print(f"Stopped {len(stopped)} process{'es' if len(stopped) != 1 else ''}:")
+        for s in stopped:
+            print(f"  - {s.get('message', '')}")
+        return 0
+
+    if not args.target:
+        procs = list_running_processes(session_root)
+        if not procs:
+            print("No running processes to stop.")
+            return 0
+        print("Specify a process to stop, or use --all:")
+        print("usage: harness-pr-review stop <pid | owner/repo#n | autoreview | --all>\n")
+        print("Currently running:")
+        _cmd_ps(session_root)
+        return 1
+
+    target = args.target.strip()
+    if target.isdigit():
+        res = stop_by_pid(session_root, int(target))
+        print(res["message"])
+        return 0 if res["ok"] else 1
+
+    if target.lower() in ("autoreview", "daemon"):
+        res = stop_autoreview()
+        print(res["message"])
+        return 0 if res["ok"] else 1
+
+    from src.repo_ref import parse_pr, parse_repo
+    try:
+        if "#" in target or "/pull/" in target:
+            owner, repo, pr_num = parse_pr(target)
+        elif args.pr_number is not None:
+            owner, repo = parse_repo(target)
+            pr_num = args.pr_number
+        else:
+            owner, repo, pr_num = parse_pr(target)
+    except ValueError as e:
+        print(f"error: cannot parse PR or process target: {target!r} ({e})",
+              file=sys.stderr)
+        return 2
+
+    res = stop_review(session_root, owner, repo, int(pr_num))
+    print(res["message"])
+    return 0 if res["ok"] else 1
+
+
 def main(argv: list[str] | None = None) -> int:
+    raw_args = list(argv) if argv is not None else sys.argv[1:]
+    if raw_args and raw_args[0] in ("ps", "list"):
+        cfg = load_config()
+        return _cmd_ps_entry(raw_args[1:], cfg.session_root)
+    if raw_args and raw_args[0] == "stop":
+        cfg = load_config()
+        return _cmd_stop(raw_args[1:], cfg.session_root)
+
     parser = argparse.ArgumentParser(prog="harness-pr-review")
     parser.add_argument("pr", nargs="?", help="<owner>/<repo> <pr-number> or owner/repo#n")
     parser.add_argument("number", nargs="?", type=int,
@@ -335,10 +450,16 @@ def main(argv: list[str] | None = None) -> int:
                              "(for e2e, skips gh & model)")
     parser.add_argument("--version", action="store_true",
                         help="print the installed version")
+    parser.add_argument("--all", action="store_true",
+                        help="stop all running review processes (with stop)")
     parser.add_argument("doctor", nargs="?",
                         help="check readiness (Python, gh, agent backend)")
     parser.add_argument("update", nargs="?", help="self-update from GitHub")
     parser.add_argument("web", nargs="?", help="open the web dashboard at http://127.0.0.1:6789")
+    parser.add_argument("ps", nargs="?",
+                        help="list running review and background processes (alias: list)")
+    parser.add_argument("stop", nargs="?",
+                        help="stop a running review or process (by PID, repo#n, or --all)")
     args = parser.parse_args(argv)
 
     if args.version:
@@ -349,6 +470,12 @@ def main(argv: list[str] | None = None) -> int:
         return _update()
     if args.web == "web" or args.pr == "web":
         return _web()
+    if args.ps == "ps" or args.pr in ("ps", "list"):
+        cfg = load_config()
+        return _cmd_ps_entry([], cfg.session_root)
+    if args.stop == "stop" or args.pr == "stop":
+        cfg = load_config()
+        return _cmd_stop(raw_args[1:] if raw_args else [], cfg.session_root)
     if args.pr is None:
         parser.print_help()
         return 2
@@ -398,6 +525,7 @@ def main(argv: list[str] | None = None) -> int:
                   "(review.lock held)", file=sys.stderr)
             return 1
         locked = True
+        _setup_signal_handler()
 
     try:
         if args.fixtures is not None:

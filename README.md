@@ -221,8 +221,14 @@ harness-pr-review owner/repo 123        # review one PR (interactive)
 harness-pr-review owner/repo 123 --skip-human   # batch, no questions
 harness-pr-review owner/repo 123 --no-post      # don't post a comment
 harness-pr-review https://github.com/owner/repo/pull/123  # paste a GitHub PR link
+harness-pr-review ps                    # list running reviews and background processes (alias: list)
+harness-pr-review stop 12345            # stop a running review or process by PID
+harness-pr-review stop owner/repo 123   # stop review for a specific PR (or owner/repo#123)
+harness-pr-review stop --all            # stop all running review processes
 autoreview --once                       # auto review: single pass
 autoreview --daemon                     # auto review: every interval_minutes
+autoreview --status                     # check if autoreview daemon is running
+autoreview --stop                       # stop running autoreview daemon
 autoreview --add-repo https://github.com/owner/repo --mode auto  # add by link
 ```
 

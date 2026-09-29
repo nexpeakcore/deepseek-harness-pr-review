@@ -893,3 +893,35 @@ def test_repo_list_has_30s_refresh(tmp_path, monkeypatch):
     assert '<meta http-equiv="refresh" content="30">' in resp.text
     assert "30000" in resp.text
 
+
+def test_stop_review_api_success(tmp_path, monkeypatch):
+    monkeypatch.setenv("DSH_SESSION_ROOT", str(tmp_path / "sessions"))
+    monkeypatch.setattr("web.server.stop_review",
+                        lambda s, o, r, p: {"ok": True, "message": "Stopped review"})
+    client = TestClient(app)
+    resp = client.post("/api/repos/demo/app/pr/42/review/stop")
+    assert resp.status_code == 200
+    assert resp.json()["ok"] is True
+    assert resp.json()["message"] == "Stopped review"
+
+
+def test_stop_review_api_not_found(tmp_path, monkeypatch):
+    monkeypatch.setenv("DSH_SESSION_ROOT", str(tmp_path / "sessions"))
+    monkeypatch.setattr("web.server.stop_review",
+                        lambda s, o, r, p: {"ok": False, "message": "No review running"})
+    client = TestClient(app)
+    resp = client.post("/api/repos/demo/app/pr/42/review/stop")
+    assert resp.status_code == 404
+    assert resp.json()["detail"] == "No review running"
+
+
+def test_list_processes_api(tmp_path, monkeypatch):
+    monkeypatch.setenv("DSH_SESSION_ROOT", str(tmp_path / "sessions"))
+    procs = [{"pid": 1234, "type": "review", "target": "demo/app#1"}]
+    monkeypatch.setattr("web.server.list_running_processes", lambda s: procs)
+    client = TestClient(app)
+    resp = client.get("/api/processes")
+    assert resp.status_code == 200
+    assert resp.json()["processes"] == procs
+
+
