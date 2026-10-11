@@ -2,6 +2,7 @@
 harness-pr-review <owner>/<repo> <pr> [--skip-human] [--force] [--no-post]
                   [--fixtures DIR] [--dry-run]
 harness-pr-review doctor
+harness-pr-review clean [--dry-run]
 """
 import argparse
 import importlib.metadata
@@ -16,6 +17,7 @@ from src.review_proc import (format_elapsed, list_running_processes,
                              review_lock_alive, stop_all_processes,
                              stop_by_pid, stop_review, stop_autoreview)
 from src.human_gate import run_gate
+from src.session_clean import clean_sessions
 from src.synthesize import (build_comment, build_ping, build_report,
                             find_report_comment, post_comment, post_ping)
 from src.verify import run_verify, setup_workspace
@@ -422,8 +424,39 @@ def _cmd_stop(argv: list[str], session_root: Path) -> int:
     return 0 if res["ok"] else 1
 
 
+def _cmd_clean(argv: list[str], session_root: Path) -> int:
+    """Delete the sessions of PRs that are closed or merged."""
+    parser = argparse.ArgumentParser(
+        prog="harness-pr-review clean",
+        description="Delete review sessions whose PR is closed or merged. "
+                    "Sessions of open PRs, of PRs GitHub can't be asked about, "
+                    "and of reviews still running are kept.")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="list what would be removed, delete nothing")
+    args = parser.parse_args(argv)
+    if not gh_available():
+        print("gh CLI not installed or not authenticated (gh auth login)",
+              file=sys.stderr)
+        return 2
+    res = clean_sessions(session_root, dry_run=args.dry_run)
+    verb = "Would remove" if args.dry_run else "Removed"
+    for path in res["removed"]:
+        print(f"{verb} {path}")
+    for path in res["busy"]:
+        print(f"Skipped (review running) {path}")
+    for path in res["unknown"]:
+        print(f"Skipped (PR state unavailable) {path}")
+    print(f"{verb}: {len(res['removed'])} closed/merged session(s); "
+          f"kept {res['open']} open, {len(res['busy'])} busy, "
+          f"{len(res['unknown'])} unknown.")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     raw_args = list(argv) if argv is not None else sys.argv[1:]
+    if raw_args and raw_args[0] == "clean":
+        cfg = load_config()
+        return _cmd_clean(raw_args[1:], cfg.session_root)
     if raw_args and raw_args[0] in ("ps", "list"):
         cfg = load_config()
         return _cmd_ps_entry(raw_args[1:], cfg.session_root)
@@ -460,6 +493,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="list running review and background processes (alias: list)")
     parser.add_argument("stop", nargs="?",
                         help="stop a running review or process (by PID, repo#n, or --all)")
+    parser.add_argument("clean", nargs="?",
+                        help="delete sessions of closed/merged PRs (--dry-run to preview)")
     args = parser.parse_args(argv)
 
     if args.version:

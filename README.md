@@ -362,6 +362,19 @@ cp com.nexpeak.pr-review.plist ~/Library/LaunchAgents/
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.nexpeak.pr-review.plist
 ```
 
+**Session cleanup.** Every review keeps a full clone under
+`sessions/<owner>/<repo>/pr-<n>/workspace`, so merged PRs leave hundreds of MB
+behind. `harness-pr-review clean` deletes the session of every closed or merged
+PR; sessions of open PRs, of PRs GitHub can't be asked about (repo gone, auth
+failure) and of reviews still running are kept. Preview with `--dry-run`.
+`scripts/clean-sessions.sh` wraps it for launchd; a plist with
+`StartCalendarInterval` (daily 03:00, log in `clean.log`) installs the same way
+as the poller above:
+
+```bash
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.nexpeak.pr-review-clean.plist
+```
+
 Re-review rules: the PR's **diff** changed vs the last snapshot → all phases
 re-run with `--force`; the PR comment is updated in place (never duplicated).
 A head that moved without changing the diff — a rebase, a merge of the base

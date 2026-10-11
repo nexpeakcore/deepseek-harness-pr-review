@@ -19,3 +19,4 @@ dashboard.log
 web.log
 .env.bak.*
 autoreview.yml.bak.*
+clean.log

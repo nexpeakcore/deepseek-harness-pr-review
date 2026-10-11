@@ -715,3 +715,30 @@ def test_stop_command_no_target_shows_running(monkeypatch, capsys):
     assert "usage: harness-pr-review stop" in out
     assert "12345" in out
 
+
+
+def test_clean_dry_run_passes_flag_and_reports(tmp_path, monkeypatch, capsys):
+    root = tmp_path / "sessions"
+    seen = {}
+
+    def fake_clean(session_root, *, dry_run, **kw):
+        seen["root"], seen["dry_run"] = session_root, dry_run
+        return {"removed": [root / "o" / "r" / "pr-1"], "open": 2,
+                "busy": [], "unknown": []}
+
+    monkeypatch.setenv("DSH_SESSION_ROOT", str(root))
+    monkeypatch.setattr("src.run.gh_available", lambda: True)
+    monkeypatch.setattr("src.run.clean_sessions", fake_clean)
+
+    assert main(["clean", "--dry-run"]) == 0
+    out = capsys.readouterr().out
+    assert seen == {"root": root, "dry_run": True}
+    assert f"Would remove {root / 'o' / 'r' / 'pr-1'}" in out
+    assert "kept 2 open" in out
+
+
+def test_clean_requires_gh(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("DSH_SESSION_ROOT", str(tmp_path / "sessions"))
+    monkeypatch.setattr("src.run.gh_available", lambda: False)
+    assert main(["clean"]) == 2
+    assert "gh CLI" in capsys.readouterr().err
