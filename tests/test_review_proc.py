@@ -1,8 +1,15 @@
 # tests/test_review_proc.py
+import os
+import signal
 import subprocess
 import sys
+import time
 
-from src.review_proc import EXIT_SPAWN_FAILED, EXIT_TIMEOUT, build_argv, run_review
+import pytest
+
+from src import review_budget
+from src.review_proc import (EXIT_INCOMPLETE, EXIT_SPAWN_FAILED, EXIT_TIMEOUT,
+                             build_argv, run_review)
 
 
 def test_build_argv_flags():
@@ -11,51 +18,110 @@ def test_build_argv_flags():
                       no_post=True) == ["o/r", "7", "--no-post"]
 
 
-def test_run_review_spawns_subprocess_and_writes_log(tmp_path, monkeypatch):
-    """Log đi vào file của PR; sys.stdout của tiến trình cha không bị đụng."""
-    seen = {}
+class _FakePopen:
+    """Stands in for the review process: records how it was started."""
+    started = []
 
-    def fake_run(cmd, **kw):
-        seen["cmd"] = cmd
-        seen["env"] = kw["env"]
-        seen["stdin"] = kw["stdin"]
+    def __init__(self, cmd, **kw):
+        self.cmd, self.kw = cmd, kw
+        self.pid = 4242
+        self.returncode = None
+        self._timeouts = list(getattr(type(self), "wait_timeouts", []))
         kw["stdout"].write("hello from child\n")
-        return subprocess.CompletedProcess(cmd, 0)
+        type(self).started.append(self)
 
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    def wait(self, timeout=None):
+        if self._timeouts:
+            self._timeouts.pop(0)
+            raise subprocess.TimeoutExpired(self.cmd, timeout)
+        self.returncode = getattr(type(self), "exit_code", 0)
+        return self.returncode
+
+    def poll(self):
+        return self.returncode
+
+
+@pytest.fixture
+def fake_popen(monkeypatch):
+    _FakePopen.started = []
+    _FakePopen.wait_timeouts = []
+    _FakePopen.exit_code = 0
+    monkeypatch.setattr(subprocess, "Popen", _FakePopen)
+    return _FakePopen
+
+
+def test_run_review_spawns_subprocess_and_writes_log(tmp_path, fake_popen):
+    """Log đi vào file của PR; sys.stdout của tiến trình cha không bị đụng."""
     log = tmp_path / "pr-7" / "review.log"
     before = sys.stdout
     code = run_review("o", "r", 7, session_root=tmp_path / "sessions",
                       log_path=log)
+    proc = fake_popen.started[0]
     assert code == 0
     assert sys.stdout is before  # không redirect global
     assert log.read_text() == "hello from child\n"
-    assert seen["cmd"][:3] == [sys.executable, "-m", "src.run"]
-    assert seen["cmd"][3:] == ["o/r", "7", "--force", "--skip-human"]
-    assert seen["env"]["DSH_SESSION_ROOT"] == str(tmp_path / "sessions")
-    assert seen["stdin"] == subprocess.DEVNULL  # không có TTY để hỏi human gate
+    assert proc.cmd[:3] == [sys.executable, "-m", "src.run"]
+    assert proc.cmd[3:] == ["o/r", "7", "--force", "--skip-human"]
+    assert proc.kw["env"]["DSH_SESSION_ROOT"] == str(tmp_path / "sessions")
+    assert proc.kw["stdin"] == subprocess.DEVNULL  # không có TTY để hỏi human gate
+    assert review_budget.DEADLINE_ENV not in proc.kw["env"]
 
 
-def test_run_review_timeout_is_reported(tmp_path, monkeypatch):
-    def fake_run(cmd, **kw):
-        raise subprocess.TimeoutExpired(cmd, 1)
+def test_run_review_returns_the_childs_exit_code(tmp_path, fake_popen):
+    fake_popen.exit_code = EXIT_INCOMPLETE
+    assert run_review("o", "r", 7, session_root=tmp_path,
+                      log_path=tmp_path / "l.log") == EXIT_INCOMPLETE
 
-    monkeypatch.setattr(subprocess, "run", fake_run)
+
+def test_run_review_timeout_kills_the_whole_process_tree(tmp_path, fake_popen,
+                                                         monkeypatch):
+    """subprocess.run's timeout kills only the child; its agents and git
+    processes used to live on, holding index.lock and burning model calls."""
+    fake_popen.wait_timeouts = [True]  # first wait() times out, the next returns
+    killed = []
+    monkeypatch.setattr("src.review_proc.find_process_children",
+                        lambda pid: [501, 502])
+    monkeypatch.setattr("src.review_proc.pid_alive", lambda pid: True)
+    monkeypatch.setattr(os, "kill", lambda pid, sig: killed.append((pid, sig)))
+
     log = tmp_path / "review.log"
     assert run_review("o", "r", 7, session_root=tmp_path, log_path=log,
                       timeout_seconds=1) == EXIT_TIMEOUT
     assert "timed out" in log.read_text()
+    termed = {pid for pid, sig in killed if sig == signal.SIGTERM}
+    assert termed == {501, 502, 4242}
 
 
 def test_run_review_spawn_failure_is_reported(tmp_path, monkeypatch):
-    def fake_run(cmd, **kw):
+    def boom(cmd, **kw):
         raise OSError("no such interpreter")
 
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(subprocess, "Popen", boom)
     log = tmp_path / "review.log"
     assert run_review("o", "r", 7, session_root=tmp_path,
                       log_path=log) == EXIT_SPAWN_FAILED
     assert "could not start review process" in log.read_text()
+
+
+def test_soft_deadline_is_set_before_the_kill_timeout(tmp_path, fake_popen):
+    before = time.time()
+    run_review("o", "r", 7, session_root=tmp_path, log_path=tmp_path / "l.log",
+               timeout_seconds=1800, soft_deadline=True)
+    deadline = float(fake_popen.started[0].kw["env"][review_budget.DEADLINE_ENV])
+    assert before + 1800 - 121 <= deadline <= time.time() + 1800 - 119
+
+
+def test_no_soft_deadline_unless_asked(tmp_path, fake_popen, monkeypatch):
+    # An inherited deadline from a parent must not leak into a manual run.
+    monkeypatch.setenv(review_budget.DEADLINE_ENV, "123")
+    run_review("o", "r", 7, session_root=tmp_path, log_path=tmp_path / "l.log",
+               timeout_seconds=1800)
+    assert review_budget.DEADLINE_ENV not in fake_popen.started[0].kw["env"]
+
+
+def test_resume_adds_the_flag_after_force():
+    assert build_argv("o", "r", 7, resume=True) == [
+        "o/r", "7", "--force", "--resume", "--skip-human"]
 
 
 def test_build_argv_no_ping():
@@ -240,3 +306,30 @@ def test_stop_all_processes(tmp_path, monkeypatch):
     assert len(results) == 2
     assert stopped == ["review o1/r1#1", "autoreview"]
 
+
+
+def test_kill_tree_stops_real_grandchildren(tmp_path):
+    """Not a mock: a review whose agents ignore its death must not outlive it."""
+    from src.review_proc import _kill_tree, find_process_children, pid_alive
+
+    proc = subprocess.Popen(["sh", "-c", "sleep 60 & sleep 60 & wait"])
+    try:
+        grandchildren = []
+        for _ in range(50):  # the shell forks them a moment after it starts
+            grandchildren = find_process_children(proc.pid)
+            if len(grandchildren) >= 2:
+                break
+            time.sleep(0.1)
+        assert len(grandchildren) >= 2
+
+        _kill_tree(proc, grace=2)
+
+        assert proc.poll() is not None
+        for _ in range(50):
+            if not any(pid_alive(p) for p in grandchildren):
+                break
+            time.sleep(0.1)
+        assert not any(pid_alive(p) for p in grandchildren)
+    finally:
+        if proc.poll() is None:
+            proc.kill()

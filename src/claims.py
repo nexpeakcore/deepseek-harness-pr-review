@@ -159,7 +159,19 @@ def _parse_claims(raw: str, source: str) -> list[dict]:
     fence = re.search(r"```(?:json)?\s*(.*?)```", text, re.DOTALL)
     if fence:
         text = fence.group(1).strip()
-    data = json.loads(text)
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as first:
+        # "Extra data": a complete array followed by more text — a closing
+        # remark, a second copy. Take the array and drop the rest, rather than
+        # failing the whole review for something the model appended.
+        start = text.find("[")
+        if start < 0:
+            raise
+        try:
+            data, _ = json.JSONDecoder().raw_decode(text, start)
+        except json.JSONDecodeError:
+            raise first from None
     if not isinstance(data, list):
         raise ValueError("claims response must be a list")
     for c in data:

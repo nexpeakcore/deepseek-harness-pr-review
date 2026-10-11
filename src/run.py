@@ -13,9 +13,12 @@ from pathlib import Path
 from src.config import PROVIDERS, load_config
 from src.gh import gh_available, run_gh
 from src.claims import all_inferred
-from src.review_proc import (format_elapsed, list_running_processes,
-                             review_lock_alive, stop_all_processes,
-                             stop_by_pid, stop_review, stop_autoreview)
+from src import checkpoint, retry_state
+from src.review_budget import ReviewIncomplete
+from src.review_proc import (EXIT_INCOMPLETE, format_elapsed,
+                             list_running_processes, review_lock_alive,
+                             stop_all_processes, stop_by_pid, stop_review,
+                             stop_autoreview)
 from src.human_gate import run_gate
 from src.session_clean import clean_sessions
 from src.synthesize import (build_comment, build_ping, build_report,
@@ -472,6 +475,10 @@ def main(argv: list[str] | None = None) -> int:
                         help="don't ask, mark as SKIPPED")
     parser.add_argument("--force", action="store_true",
                         help="re-run phases that already have results")
+    parser.add_argument("--resume", action="store_true",
+                        help="with --force: keep the snapshot, claims and finished "
+                             "agents of an interrupted review of the same head, "
+                             "and run only what is missing")
     parser.add_argument("--no-post", action="store_true",
                         help="don't post a comment on the PR")
     parser.add_argument("--no-ping", action="store_true",
@@ -575,14 +582,20 @@ def main(argv: list[str] | None = None) -> int:
             from src.snapshot import build_snapshot
             from src.claims import extract_claims
 
-            snapshot = _load_or_skip("snapshot.json", session_dir, args.force)
+            # --force re-runs everything; --resume is --force that keeps what an
+            # interrupted review of this same head already produced. It is the
+            # poller's retry of a review that was killed or ran out of time.
+            fresh = args.force and not args.resume
+            if fresh:
+                checkpoint.clear(session_dir)
+            snapshot = _load_or_skip("snapshot.json", session_dir, fresh)
             if snapshot is None:
                 _phase(1, "snapshot", f"{owner}/{repo}#{num}")
                 snapshot = build_snapshot(owner, repo, int(num), session_dir)
             _phase(1, "snapshot", f"{len(snapshot['files'])} files, "
                                   f"{len(snapshot['commits'])} commits")
 
-            claims = _load_or_skip("claims.json", session_dir, args.force)
+            claims = _load_or_skip("claims.json", session_dir, fresh)
             if claims is None:
                 _phase(2, "claims", "reading the PR description")
                 claims = extract_claims(snapshot, cfg.phase_cfg(), session_dir)
@@ -607,11 +620,26 @@ def main(argv: list[str] | None = None) -> int:
                         (session_dir / name).unlink(missing_ok=True)
                     raise
                 _phase(4, "verify", "starting agents")
-                findings = run_verify(cfg.phase_cfg(), workspace, session_dir,
-                                      snapshot, claims)
+                head = snapshot.get("head_sha", "")
+                spent = retry_state.incomplete_count(session_dir, head)
+                try:
+                    # The last allowed attempt ships what it has, gaps and
+                    # all: a review that defers forever is no review.
+                    findings = run_verify(
+                        cfg.phase_cfg(), workspace, session_dir, snapshot,
+                        claims,
+                        may_defer=spent + 1 < retry_state.MAX_INCOMPLETE_ATTEMPTS)
+                except ReviewIncomplete as e:
+                    retry_state.record_incomplete(session_dir, head)
+                    print(f"[harness] {e}. Finished agents are saved; the next "
+                          f"pass resumes (attempt {spent + 1} of "
+                          f"{retry_state.MAX_INCOMPLETE_ATTEMPTS}).", flush=True)
+                    return EXIT_INCOMPLETE
                 (session_dir / "findings.json").write_text(
                     json.dumps(findings, indent=2))
                 _bump_rounds(session_dir)
+                checkpoint.clear(session_dir)
+                retry_state.clear(session_dir)
 
         _phase(5, "report", f"{len(findings.get('claims', []))} claims, "
                             f"{len(findings.get('docs', []))} docs, "

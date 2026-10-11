@@ -19,10 +19,11 @@ the reply text for the session log.
 import json
 import subprocess
 import sys
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from src import code_review
+from src import checkpoint, code_review, review_budget
 from src.agent_pool import agent_slot, max_agents
 from src.docs_rank import rank_docs
 
@@ -85,6 +86,38 @@ def _run_git(args: list[str], cwd: Path) -> None:
         raise RuntimeError(f"git {' '.join(args)} failed: {proc.stderr.strip()}")
 
 
+# A git operation holds its lock for seconds, a checkout of a very large tree
+# for under a minute. A lock older than this belongs to a git that was killed.
+GIT_LOCK_MAX_AGE_SECONDS = 120
+
+
+def clear_stale_git_locks(workspace: Path, now: float | None = None) -> list[str]:
+    """Remove lock files a killed git left in the workspace; return their names.
+
+    A review killed mid-git (the timeout, a stop) leaves `.git/index.lock`
+    behind, and every later `git checkout` then refuses to run — so the PR
+    failed in phase 3 on every retry, however much time it was given. The
+    workspace is this review's own and the per-PR review.lock keeps a second
+    review out, so nothing legitimate is holding a lock that old.
+    """
+    now = time.time() if now is None else now
+    git_dir = workspace / ".git"
+    candidates = list(git_dir.glob("*.lock"))
+    if (git_dir / "refs").is_dir():
+        candidates += (git_dir / "refs").rglob("*.lock")
+    removed = []
+    for lock in candidates:
+        try:
+            if (lock.is_symlink() or not lock.is_file()
+                    or now - lock.stat().st_mtime < GIT_LOCK_MAX_AGE_SECONDS):
+                continue
+            lock.unlink()
+            removed.append(str(lock.relative_to(git_dir)))
+        except OSError:
+            continue
+    return removed
+
+
 class StaleSnapshotError(RuntimeError):
     """The snapshot names a PR head that can no longer be fetched.
 
@@ -117,6 +150,10 @@ def setup_workspace(owner: str, repo: str, n: int, workspace: Path,
     if not workspace.exists():
         url = remote_url or f"https://github.com/{owner}/{repo}.git"
         _run_git(["clone", "--no-checkout", url, str(workspace)], workspace.parent)
+    else:
+        for name in clear_stale_git_locks(workspace):
+            print(f"      removed stale git lock .git/{name} "
+                  f"(left by a killed review)", flush=True)
     branch = f"pr-{n}"
     # fetch vào FETCH_HEAD (không dùng refspec :branch — git từ chối fetch
     # vào branch đang checkout khi re-review); checkout -B force-reset branch
@@ -321,20 +358,40 @@ def merge_findings(parts: list[dict]) -> dict:
     return merged
 
 
+class AgentOutputError(RuntimeError):
+    """The agent ran but its answer is unusable: missing, malformed, wrong shape.
+
+    Its own type because it is the one failure worth a second try — the model
+    slipped on the format, and the same prompt usually does not slip twice. A
+    timeout or a crash is not retried: it would cost the same again.
+    """
+
+
 def read_part(path: Path, keys: tuple) -> dict:
     """Read + shape-check one agent's output file."""
     if not path.exists():
-        raise RuntimeError(f"{path.name} does not exist (agent did not write it)")
+        raise AgentOutputError(f"{path.name} does not exist (agent did not write it)")
     try:
         data = json.loads(path.read_text())
     except json.JSONDecodeError as e:
-        raise RuntimeError(f"{path.name} is not valid JSON: {e}") from e
+        raise AgentOutputError(f"{path.name} is not valid JSON: {e}") from e
     if not isinstance(data, dict):
-        raise RuntimeError(f"{path.name} must be a JSON object")
+        raise AgentOutputError(f"{path.name} must be a JSON object")
     for key in keys:
         if not isinstance(data.get(key), list):
-            raise RuntimeError(f"{path.name}: missing key {key} (must be a list)")
+            raise AgentOutputError(f"{path.name}: missing key {key} (must be a list)")
     return {k: data[k] for k in keys}
+
+
+def _agent_timeout(task: dict, default: int) -> dict:
+    """Keyword args that cap a CLI agent at what is left of the review.
+
+    Empty when there is no review deadline, so a manual run keeps the
+    backend's own default and a test double that takes no timeout still works.
+    """
+    if "timeout" not in task:
+        return {}
+    return {"timeout": max(1, int(min(task["timeout"], default)))}
 
 
 def _run_agent(cfg: dict, workspace: Path, session_dir: Path, task: dict) -> str:
@@ -370,6 +427,7 @@ def _run_agent_claude(cfg: dict, workspace: Path, session_dir: Path,
                or claude_cli.DEFAULT_MODEL),
         cwd=workspace,
         tools=claude_cli.AGENT_TOOLS,
+        **_agent_timeout(task, claude_cli.DEFAULT_TIMEOUT_SECONDS),
         meta_path=session_dir / f"claude-{task['name']}.json",
         # An attempt that writes this and then dies in the API must not leave
         # it behind for the retry: the salvage below would see a file already
@@ -393,10 +451,11 @@ def _run_agent_codex(cfg: dict, workspace: Path, session_dir: Path,
         f"that belongs in {task['out']}.",
         model=(cfg.get("codex_model") or cfg.get("model") or codex_cli.DEFAULT_MODEL),
         cwd=workspace,
+        **_agent_timeout(task, codex_cli.DEFAULT_TIMEOUT_SECONDS),
     )
     salvaged = codex_cli.extract_json_object(response)
     if salvaged is None:
-        raise RuntimeError("codex returned no complete JSON object")
+        raise AgentOutputError("codex returned no complete JSON object")
     (workspace / task["out"]).write_text(salvaged)
     return response
 
@@ -411,11 +470,12 @@ def _run_agent_agy(cfg: dict, workspace: Path, session_dir: Path,
         task["prompt"],
         model=(cfg.get("agy_model") or cfg.get("model") or agy_cli.DEFAULT_MODEL),
         cwd=workspace,
+        **_agent_timeout(task, agy_cli.DEFAULT_TIMEOUT_SECONDS),
     )
     if not out.exists():
         salvaged = agy_cli.extract_json_object(response)
         if salvaged is None:
-            raise RuntimeError("agy returned no complete JSON object")
+            raise AgentOutputError("agy returned no complete JSON object")
         out.write_text(salvaged)
     return response
 
@@ -445,6 +505,48 @@ def backend_label(cfg: dict) -> str:
     return f"{provider_of(cfg)}/{cfg.get('model') or '?'}"
 
 
+# One extra try for an answer that came back unusable (see AgentOutputError).
+AGENT_ATTEMPTS = 2
+
+
+def _stamp(tasks: list[dict], snapshot: dict) -> None:
+    """Give each task the fingerprint its checkpoint is filed under."""
+    head = snapshot.get("head_sha", "")
+    for task in tasks:
+        task["fingerprint"] = checkpoint.fingerprint(task, head)
+
+
+def _deadline_close(left: float | None) -> bool:
+    return left is not None and left < review_budget.MIN_AGENT_SECONDS
+
+
+def _run_once(cfg: dict, workspace: Path, session_dir: Path, task: dict,
+              runner) -> dict:
+    """One attempt: wait for a slot, run the agent, read its part file.
+
+    With a review deadline the wait for a slot is bounded by it, and the agent
+    gets what is left as its own timeout — so no agent outlives the review.
+    """
+    left = review_budget.time_left()
+    if _deadline_close(left):
+        raise RuntimeError(f"{review_budget.DEADLINE_PREFIX}: agent not started")
+    waiting = time.monotonic()
+    with agent_slot(f"{session_dir.name}:{task['name']}",
+                    **({} if left is None else {"timeout": left})):
+        queued = time.monotonic() - waiting
+        if queued > 1:
+            print(f"      {task['name']}: waited {queued:.0f}s for an agent slot",
+                  flush=True)
+        left = review_budget.time_left()
+        if _deadline_close(left):
+            raise RuntimeError(
+                f"{review_budget.DEADLINE_PREFIX}: agent not started")
+        response = runner(cfg, workspace, session_dir,
+                          task if left is None else {**task, "timeout": left})
+    (session_dir / f"agent-log-{task['name']}.txt").write_text(response or "")
+    return read_part(workspace / task["out"], task["keys"])
+
+
 def _execute(cfg: dict, workspace: Path, session_dir: Path, task: dict,
              runner) -> tuple[dict, dict | None, str | None]:
     """Run one agent under a global slot. Never raises — the caller decides.
@@ -452,29 +554,49 @@ def _execute(cfg: dict, workspace: Path, session_dir: Path, task: dict,
     Progress is printed as each agent finishes: verify is the phase that takes
     minutes, and without a line per agent the dashboard's live log shows nothing
     for the whole of it.
-    """
-    import time
 
+    A finished agent is checkpointed, and an agent already checkpointed for this
+    exact input is not run again: that is what lets a review that ran out of
+    time carry on instead of starting over.
+    """
     started = time.monotonic()
+    saved = checkpoint.load(session_dir, task)
+    if saved is not None:
+        (session_dir / f"agent-log-{task['name']}.txt").write_text(
+            "(result kept from an earlier attempt at this head)\n")
+        print(f"      {task['name']}: kept from an earlier attempt", flush=True)
+        return task, saved, None
     try:
-        waiting = time.monotonic()
-        with agent_slot(f"{session_dir.name}:{task['name']}"):
-            queued = time.monotonic() - waiting
-            if queued > 1:
-                print(f"      {task['name']}: waited {queued:.0f}s for an agent slot",
-                      flush=True)
-            response = runner(cfg, workspace, session_dir, task)
-        (session_dir / f"agent-log-{task['name']}.txt").write_text(response or "")
-        part = read_part(workspace / task["out"], task["keys"])
+        for attempt in range(1, AGENT_ATTEMPTS + 1):
+            try:
+                part = _run_once(cfg, workspace, session_dir, task, runner)
+                break
+            except AgentOutputError as e:
+                if (attempt == AGENT_ATTEMPTS
+                        or _deadline_close(review_budget.time_left())):
+                    raise
+                print(f"      {task['name']}: {e} — retrying once", flush=True)
+                # A runner that only writes the file when it is absent would
+                # otherwise hand the malformed one straight back.
+                (workspace / task["out"]).unlink(missing_ok=True)
+        checkpoint.save(session_dir, task, part)
         counts = ", ".join(f"{len(part[k])} {k}" for k in task["keys"]
                            if k != "unresolved_questions")
         print(f"      {task['name']}: done in {time.monotonic() - started:.0f}s"
               f"{f' ({counts})' if counts else ''}", flush=True)
         return task, part, None
     except (RuntimeError, OSError, ValueError, TimeoutError) as e:
+        message = str(e)
+        left = review_budget.time_left()
+        # An agent cut short by its own deadline timeout, or never given a
+        # slot in time, is out of time — not broken. The caller tells the two
+        # apart: the first is worth resuming, the second is not.
+        if (left is not None and left <= 5
+                and not review_budget.is_deadline_error(message)):
+            message = f"{review_budget.DEADLINE_PREFIX}: {message}"
         print(f"      {task['name']}: FAILED after "
-              f"{time.monotonic() - started:.0f}s — {e}", flush=True)
-        return task, None, str(e)
+              f"{time.monotonic() - started:.0f}s — {message}", flush=True)
+        return task, None, message
 
 
 def _write_input(path: Path, content: str) -> None:
@@ -535,14 +657,21 @@ def _fresh_work_dir(workspace: Path, session_dir: Path) -> str:
 
 
 def run_verify(cfg: dict, workspace: Path, session_dir: Path, snapshot: dict,
-               claims: list[dict], runner=None) -> dict:
-    """Fan out one agent per axis, merge the parts, validate and return findings."""
+               claims: list[dict], runner=None, may_defer: bool = False) -> dict:
+    """Fan out one agent per axis, merge the parts, validate and return findings.
+
+    With may_defer, a review that reaches its deadline with agents unfinished
+    raises ReviewIncomplete instead of returning a partial answer: the agents
+    that did finish are checkpointed, and the next attempt runs only the rest.
+    Without it the unfinished axes are reported as gaps, like any failed agent.
+    """
     runner = runner or select_runner(cfg)
     session_dir.mkdir(parents=True, exist_ok=True)
     doc_candidates = rank_docs(workspace, snapshot, claims)
     tasks = plan_tasks(snapshot, claims, doc_candidates,
                        code=cfg.get("code_review", True),
                        work_dir=_fresh_work_dir(workspace, session_dir))
+    _stamp(tasks, snapshot)
 
     # The work directory is new, so no part file from the previous round can be
     # read as this round's; the unlink stays for a runner that reuses paths.
@@ -561,6 +690,13 @@ def run_verify(cfg: dict, workspace: Path, session_dir: Path, snapshot: dict,
     parts = [part for _, part, _ in results if part is not None]
     failures = [(t, err) for t, _, err in results if err is not None]
 
+    unfinished = [t["name"] for t, err in failures
+                  if review_budget.is_deadline_error(err)]
+    if unfinished and may_defer:
+        raise review_budget.ReviewIncomplete(
+            f"out of time with {len(unfinished)} of {len(tasks)} agents "
+            f"unfinished ({', '.join(unfinished)})")
+
     claim_tasks = [t for t in tasks if t["axis"] == "claims"]
     claims_failed = [t for t, err in failures if t["axis"] == "claims"]
     if claim_tasks and len(claims_failed) == len(claim_tasks):
@@ -578,7 +714,7 @@ def run_verify(cfg: dict, workspace: Path, session_dir: Path, snapshot: dict,
 
     if any(t["axis"] == "code" for t in tasks):
         _finish_code_axis(cfg, workspace, session_dir, snapshot, results,
-                          runner, findings)
+                          runner, findings, may_defer=may_defer)
 
     _validate_findings(findings)
     return findings
@@ -612,7 +748,7 @@ def _code_verify_tasks(snapshot: dict, issues: list[dict],
 
 def _finish_code_axis(cfg: dict, workspace: Path, session_dir: Path,
                       snapshot: dict, results: list, runner,
-                      findings: dict) -> None:
+                      findings: dict, may_defer: bool = False) -> None:
     """Number the code issues, have a second agent check the serious ones.
 
     Runs after the fan-out rather than inside it: the verify agent needs the
@@ -637,11 +773,18 @@ def _finish_code_axis(cfg: dict, workspace: Path, session_dir: Path,
         diff_files = [name for task in code_tasks for name in task.get("inputs", {})]
         tasks = _code_verify_tasks(snapshot, to_check, diff_files,
                                    code_tasks[0].get("work_dir", ""))
+        _stamp(tasks, snapshot)
         for task in tasks:
             (workspace / task["out"]).unlink(missing_ok=True)
         with ThreadPoolExecutor(max_workers=len(tasks)) as pool:
             done = list(pool.map(
                 lambda t: _execute(cfg, workspace, session_dir, t, runner), tasks))
+        unfinished = [t["name"] for t, _, err in done
+                      if review_budget.is_deadline_error(err)]
+        if unfinished and may_defer:
+            raise review_budget.ReviewIncomplete(
+                f"out of time with {len(unfinished)} of {len(tasks)} code-verify "
+                f"agents unfinished ({', '.join(unfinished)})")
         verdicts, failed = [], 0
         for task, part, error in done:
             if part is None:
