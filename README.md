@@ -40,7 +40,7 @@ and the header is honest about what it found: description partial, 2 risks,
 2 stale docs. Tabs split claims, docs, requirement impact and review threads.
 
 Repo-level pages (KPIs, verdict distribution, every open PR with review status)
-and live demo data are included — see [Web dashboard](#web-dashboard).
+are included — see [Web dashboard](#web-dashboard).
 
 ## Features
 
@@ -272,6 +272,12 @@ DSH_SESSION_ROOT=sessions harness-pr-review web
 harness-pr-review web   # open http://127.0.0.1:6789
 ```
 
+To keep it running across logins and crashes, load a launchd job whose plist
+runs `scripts/dashboard.sh` with `RunAtLoad` and `KeepAlive` (log in `web.log`),
+installed the same way as the poller plist under [Auto review](#auto-review).
+It runs the checkout's code, so `git pull` plus
+`launchctl kickstart -k gui/$(id -u)/com.nexpeak.pr-review-web` is the update.
+
 Pages: repo list → repo detail (KPIs + verdict donut + PR table) → PR detail
 (tabs: Code / Claims / Docs / Impact / Threads / Confirm). The PR table lists ALL open
 PRs from GitHub with review status (Not reviewed / Reviewing / Reviewed N
@@ -285,10 +291,6 @@ PARTIAL and RISK items move to Needs a look. Each open PR row has a
 **Review now** / **Re-review** button that runs the review synchronously using
 the repo's auto-review config (skip-human + post-comment flags from
 `autoreview.yml`).
-
-**Demo data** is checked into `sessions/demo/app/` — start the server and open
-http://127.0.0.1:6789/repos/demo/app/pr/7 for a sample review (PR #8 shows a
-a CONTRADICTED verdict + FABRICATED doc), useful for screenshots and documentation.
 
 ## Auto review
 

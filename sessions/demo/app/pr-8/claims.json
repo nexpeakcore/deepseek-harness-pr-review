@@ -1,4 +1,0 @@
-[
-  {"id": "C1", "text": "Cart total is now calculated server-side, not on the client.", "category": "refactor", "files": ["lib/features/checkout/checkout_api.dart"], "docs": []},
-  {"id": "C2", "text": "Idempotency keys prevent double charges on retry.", "category": "feature", "files": ["lib/features/checkout/checkout_api.dart"], "docs": ["docs/PAYMENTS.md"]}
-]
