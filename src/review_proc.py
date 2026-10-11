@@ -12,14 +12,21 @@ died inside a live server still looked alive to `review_process_info` forever.
 """
 import json
 import os
+import signal
 import subprocess
 import sys
 from pathlib import Path
+
+from src import review_budget
 
 # Exit codes run.py never returns, so callers can tell these apart from a
 # review that ran and failed on its own terms.
 EXIT_TIMEOUT = 124  # same convention as timeout(1)
 EXIT_SPAWN_FAILED = 125
+# The one run.py does return, and not a failure: the review reached its soft
+# deadline with agents unfinished, saved the rest, and wants another attempt.
+# 75 is EX_TEMPFAIL in sysexits.h.
+EXIT_INCOMPLETE = 75
 
 
 def pid_alive(pid: int) -> bool:
@@ -371,11 +378,13 @@ def stop_all_processes(session_root: Path,
 
 def build_argv(owner: str, repo: str, n: int, *, force: bool = True,
                skip_human: bool = True, no_post: bool = False,
-               no_ping: bool = False) -> list[str]:
+               no_ping: bool = False, resume: bool = False) -> list[str]:
     """argv for `python -m src.run` — kept separate so tests can assert on it."""
     argv = [f"{owner}/{repo}", str(n)]
     if force:
         argv.append("--force")
+    if resume:
+        argv.append("--resume")
     if skip_human:
         argv.append("--skip-human")
     if no_post:
@@ -385,12 +394,44 @@ def build_argv(owner: str, repo: str, n: int, *, force: bool = True,
     return argv
 
 
+def _kill_tree(proc: subprocess.Popen, grace: float = 5.0) -> None:
+    """Stop a review and everything it started.
+
+    subprocess.run's own timeout kills only the direct child. The agents and
+    git processes below it carried on: they could hold the workspace's
+    index.lock, keep calling the model, and outlive the review that wanted
+    them. SIGTERM goes first so the review's handler can release review.lock;
+    whatever ignores it is killed.
+    """
+    family = find_process_children(proc.pid) + [proc.pid]
+    for pid in family:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except (ProcessLookupError, PermissionError):
+            pass
+    try:
+        proc.wait(timeout=grace)
+    except subprocess.TimeoutExpired:
+        pass
+    for pid in family:
+        if pid == proc.pid and proc.poll() is not None:
+            continue
+        if pid_alive(pid):
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
+    proc.wait()
+
+
 def run_review(owner: str, repo: str, n: int, *, session_root: Path,
                log_path: Path, force: bool = True, skip_human: bool = True,
                no_post: bool = False, no_ping: bool = False,
                cwd: Path | None = None,
                timeout_seconds: float | None = None,
-               max_agents: int | None = None) -> int:
+               max_agents: int | None = None,
+               resume: bool = False,
+               soft_deadline: bool = False) -> int:
     """Run one review in its own process. Returns run.py's exit code.
 
     Output (stdout + stderr) goes straight to `log_path`; nothing about the
@@ -399,6 +440,12 @@ def run_review(owner: str, repo: str, n: int, *, session_root: Path,
     stdin is /dev/null: a subprocess has no terminal to prompt on. human_gate
     turns the resulting EOFError into a SKIPPED answer rather than crashing,
     so this is safe even without --skip-human.
+
+    `resume` carries on an interrupted review of the same head instead of
+    starting over. `soft_deadline` (needs a timeout) tells the review when it
+    must wrap up, a little before the kill, so it can exit with
+    EXIT_INCOMPLETE and its finished work saved instead of being killed
+    mid-flight. Only callers that understand EXIT_INCOMPLETE should set it.
     """
     env = dict(os.environ)
     env["DSH_SESSION_ROOT"] = str(session_root)
@@ -407,23 +454,31 @@ def run_review(owner: str, repo: str, n: int, *, session_root: Path,
         # The child fans out into several agents; the cap is global across all
         # concurrent reviews, so it has to travel with the process.
         env["HARNESS_MAX_AGENTS"] = str(max_agents)
+    if soft_deadline and timeout_seconds:
+        env[review_budget.DEADLINE_ENV] = str(
+            review_budget.soft_deadline_for(timeout_seconds))
+    else:
+        env.pop(review_budget.DEADLINE_ENV, None)  # never inherit a stale one
 
     cmd = [sys.executable, "-m", "src.run",
            *build_argv(owner, repo, n, force=force, skip_human=skip_human,
-                       no_post=no_post, no_ping=no_ping)]
+                       no_post=no_post, no_ping=no_ping, resume=resume)]
     log_path.parent.mkdir(parents=True, exist_ok=True)
     try:
         with open(log_path, "w", buffering=1) as logf:
-            proc = subprocess.run(
+            proc = subprocess.Popen(
                 cmd, stdout=logf, stderr=subprocess.STDOUT,
                 stdin=subprocess.DEVNULL,
-                cwd=str(cwd or Path.cwd()), env=env,
-                timeout=timeout_seconds)
-        return proc.returncode
+                cwd=str(cwd or Path.cwd()), env=env)
+            try:
+                return proc.wait(timeout=timeout_seconds)
+            except subprocess.TimeoutExpired:
+                _kill_tree(proc)
+                raise
     except subprocess.TimeoutExpired:
-        # subprocess.run has already killed the child. Its review.lock is left
-        # behind holding a dead PID, which _acquire_review_lock reclaims on the
-        # next attempt — that is exactly the stale-lock path, not a leak.
+        # The review and its descendants are gone. Its review.lock may be left
+        # holding a dead PID, which _acquire_review_lock reclaims on the next
+        # attempt — that is exactly the stale-lock path, not a leak.
         with open(log_path, "a") as logf:
             logf.write(f"\n[harness] review timed out after "
                        f"{timeout_seconds}s and was killed\n")

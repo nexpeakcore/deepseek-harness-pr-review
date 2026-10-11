@@ -77,7 +77,7 @@ def test_rerun_skips_verify(tmp_path, monkeypatch):
                              head_sha=None):
         fake_setup_calls.append(1)
 
-    def fake_run_verify(cfg, workspace, session_dir, snapshot, claims):
+    def fake_run_verify(cfg, workspace, session_dir, snapshot, claims, **kw):
         calls["verify"] += 1
         return fake_findings
 
@@ -121,7 +121,7 @@ def test_verify_run_bumps_rounds(tmp_path, monkeypatch):
                              head_sha=None):
         pass
 
-    def fake_run_verify(cfg, workspace, session_dir, snapshot, claims):
+    def fake_run_verify(cfg, workspace, session_dir, snapshot, claims, **kw):
         return fake_findings
 
     monkeypatch.setattr("src.snapshot.build_snapshot", fake_build_snapshot)
@@ -161,7 +161,7 @@ def test_main_creates_and_releases_review_lock(tmp_path, monkeypatch):
         (session_dir / "claims.json").write_text(json.dumps([]))
         return []
 
-    def fake_run_verify(cfg, workspace, session_dir, snapshot, claims):
+    def fake_run_verify(cfg, workspace, session_dir, snapshot, claims, **kw):
         # Trong lúc verify, lock phải tồn tại
         assert (session_dir / "review.lock").exists()
         return fake_findings

@@ -17,8 +17,9 @@ from src.autoreview_config import auto_repos, list_repos, load_config, \
 from src.config import PROVIDERS
 from src.config import load_config as load_env_config
 from src.gh import gh_available, run_gh
+from src import retry_state
 from src.snapshot import diff_fingerprint, fetch_files as fetch_pr_files
-from src.review_proc import review_lock_alive
+from src.review_proc import EXIT_INCOMPLETE, review_lock_alive
 
 CONFIG_PATH = Path("autoreview.yml")
 LOCK_PATH = Path("autoreview.lock")
@@ -232,6 +233,15 @@ def _clean_rerun_session(session_dir: Path) -> None:
         log.unlink(missing_ok=True)
 
 
+def _stored_head(session_dir: Path) -> str:
+    """The head commit the session's snapshot was taken at, or ''."""
+    try:
+        return json.loads((session_dir / "snapshot.json").read_text()).get(
+            "head_sha", "")
+    except (json.JSONDecodeError, OSError, AttributeError):
+        return ""
+
+
 def _dispatch(cfg: dict, owner: str, repo: str, n: int,
               head_sha: str) -> int:
     """Chạy pipeline cho 1 PR trong tiến trình riêng. Trả về exit code.
@@ -249,6 +259,11 @@ def _dispatch(cfg: dict, owner: str, repo: str, n: int,
         session_root=session_root,
         log_path=session_dir / "review.log",
         force=True,
+        # The snapshot on disk is of this very head: the last attempt was
+        # killed or ran out of time, and its claims and finished agents are
+        # still good. A moved head has to start over.
+        resume=bool(head_sha) and _stored_head(session_dir) == head_sha,
+        soft_deadline=True,
         skip_human=cfg.get("skip_human", True),
         no_post=not cfg.get("post_comment", True),
         no_ping=not cfg.get("ping_comment", True),
@@ -289,11 +304,21 @@ def run_pass(cfg: dict, session_root: Path, dry_run: bool = False,
             if plan["decision"] == "SKIP-NO-CHANGE":
                 print(f"{line} (head {plan['head_sha'][:7]}, diff unchanged)")
                 continue
+            session_dir = session_root / owner / repo / f"pr-{n}"
+            # A review that keeps failing at the same head would otherwise be
+            # re-run — snapshot, claims and all — on every pass, forever.
+            wait = retry_state.backoff_remaining(
+                session_dir, plan["head_sha"], cfg.get("interval_minutes", 2))
+            if wait > 0:
+                print(f"BACKOFF {owner}/{repo}#{n}: failed "
+                      f"{retry_state.failure_count(session_dir, plan['head_sha'])} "
+                      f"times at {plan['head_sha'][:7]}, next try in "
+                      f"{max(1, round(wait / 60))}m")
+                continue
             if dry_run:
                 print(f"[dry-run] would review: {line}")
                 dispatched += 1
                 continue
-            session_dir = session_root / owner / repo / f"pr-{n}"
             lock = session_dir / "review.lock"
             if lock.exists():
                 if review_lock_alive(lock):
@@ -308,21 +333,36 @@ def run_pass(cfg: dict, session_root: Path, dry_run: bool = False,
             if plan["decision"] == "RE-RUN":
                 _clean_rerun_session(session_dir)
             print(line)
-            queued.append((owner, repo, n, plan["head_sha"]))
+            queued.append((owner, repo, n, plan["head_sha"], session_root))
 
     return dispatched + _dispatch_all(cfg, queued)
 
 
-def _run_one(cfg: dict, owner: str, repo: str, n: int, head_sha: str) -> bool:
+def _run_one(cfg: dict, owner: str, repo: str, n: int, head_sha: str,
+             session_root: Path | None = None) -> bool:
     """Dispatch 1 PR, log lỗi. True nếu review thành công."""
+    session_dir = (session_root / owner / repo / f"pr-{n}"
+                   if session_root is not None else None)
+
+    def failed() -> bool:
+        if session_dir is not None and session_dir.is_dir():
+            retry_state.record_failure(session_dir, head_sha)
+        return False
+
     try:
         code = _dispatch(cfg, owner, repo, n, head_sha)
     except (RuntimeError, ValueError, OSError) as e:
         print(f"FAILED {owner}/{repo}#{n}: {e}", file=sys.stderr)
+        return failed()
+    if code == EXIT_INCOMPLETE:
+        # Not a failure and not counted as one: the review made progress and
+        # saved it. The next pass finds no findings for this head and resumes.
+        print(f"INCOMPLETE {owner}/{repo}#{n}: out of time, progress saved — "
+              f"resuming next pass")
         return False
     if code != 0:
         print(f"FAILED {owner}/{repo}#{n}: exit {code}", file=sys.stderr)
-        return False
+        return failed()
     return True
 
 

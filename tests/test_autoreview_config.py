@@ -163,14 +163,14 @@ def test_max_agents_travels_to_the_review_subprocess(tmp_path, monkeypatch):
 
     seen = {}
 
-    def fake_run(cmd, **kw):
-        seen.update(kw["env"])
+    class P:
+        def __init__(self, cmd, **kw):
+            seen.update(kw["env"])
 
-        class P:
-            returncode = 0
-        return P()
+        def wait(self, timeout=None):
+            return 0
 
-    monkeypatch.setattr("review_proc.subprocess.run", fake_run)
+    monkeypatch.setattr("review_proc.subprocess.Popen", P)
     run_review("o", "r", 1, session_root=tmp_path,
                log_path=tmp_path / "l.log", max_agents=6)
     assert seen["HARNESS_MAX_AGENTS"] == "6"

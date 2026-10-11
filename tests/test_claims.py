@@ -203,3 +203,32 @@ def test_extract_claims_uses_the_agy_provider_backend(tmp_path, monkeypatch):
 
     assert [c["id"] for c in claims] == ["C1"]
     assert claims[0]["source"] == "stated"
+
+
+def test_text_after_the_claims_array_is_ignored():
+    """nexpeakposv2#65: 'Extra data: line 126 column 1' failed the whole review
+    because the model added a remark after a complete, valid array."""
+    from src.claims import _parse_claims
+
+    raw = ('[{"id": "C1", "text": "adds x", "category": "feature"}]\n\n'
+           'Let me know if you want more detail.')
+    claims = _parse_claims(raw, "stated")
+    assert [c["id"] for c in claims] == ["C1"]
+    assert claims[0]["source"] == "stated"
+
+
+def test_prose_before_the_claims_array_is_ignored():
+    from src.claims import _parse_claims
+
+    raw = 'Here are the claims:\n[{"id": "C1", "text": "t", "category": "bugfix"}]'
+    assert _parse_claims(raw, "stated")[0]["id"] == "C1"
+
+
+def test_a_truncated_array_still_fails():
+    import json as _json
+
+    import pytest
+    from src.claims import _parse_claims
+
+    with pytest.raises(_json.JSONDecodeError):
+        _parse_claims('[{"id": "C1", "text": "t", "categ', "stated")

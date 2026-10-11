@@ -375,6 +375,29 @@ as the poller above:
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.nexpeak.pr-review-clean.plist
 ```
 
+**Large PRs.** A review of a PR with many files fans out into a dozen or more
+agents, and used to be all-or-nothing: killed at `review_timeout_minutes`, it
+lost every finished agent and the retry ran out of time in the same place. Now:
+
+- Each finished agent is saved under `sessions/.../checkpoints/`. A retry of the
+  same head reuses them and runs only what is missing. A new push, or a
+  different diff or description, invalidates them.
+- The poller gives the review a soft deadline two minutes before the kill. At
+  the deadline it stops starting agents, cuts the running ones short and exits
+  with code 75 (`INCOMPLETE` in the poller log) instead of being killed; the
+  next pass resumes. After three such attempts the review ships what it has,
+  with the unfinished axes listed as a "Review gap".
+- A review that keeps failing at the same head is retried at once the first time
+  and then with a growing wait (`BACKOFF` in the log, capped at an hour);
+  a push resets it. State lives in `retry-state.json` in the PR's session.
+- An agent whose answer is unusable (missing file, bad JSON) gets one more try.
+- A timeout now stops the review's whole process tree, not just its first
+  process, and a `.git/index.lock` left behind by a killed git is cleared
+  before the next checkout instead of failing the PR on every retry.
+
+`harness-pr-review <repo> <pr> --force --resume` is the manual form of the
+poller's retry; plain `--force` still starts over.
+
 Re-review rules: the PR's **diff** changed vs the last snapshot → all phases
 re-run with `--force`; the PR comment is updated in place (never duplicated).
 A head that moved without changing the diff — a rebase, a merge of the base
