@@ -13,4 +13,5 @@ if [ -f .env ]; then
   set +a
 fi
 export PYTHONPATH=src
+export PYTHONUNBUFFERED=1
 exec .venv/bin/python -m src.autoreview --once

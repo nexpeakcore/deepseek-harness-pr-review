@@ -272,6 +272,12 @@ DSH_SESSION_ROOT=sessions harness-pr-review web
 harness-pr-review web   # open http://127.0.0.1:6789
 ```
 
+To keep it running across logins and crashes, load a launchd job whose plist
+runs `scripts/dashboard.sh` with `RunAtLoad` and `KeepAlive` (log in `web.log`),
+installed the same way as the poller plist under [Auto review](#auto-review).
+It runs the checkout's code, so `git pull` plus
+`launchctl kickstart -k gui/$(id -u)/com.nexpeak.pr-review-web` is the update.
+
 Pages: repo list → repo detail (KPIs + verdict donut + PR table) → PR detail
 (tabs: Code / Claims / Docs / Impact / Threads / Confirm). The PR table lists ALL open
 PRs from GitHub with review status (Not reviewed / Reviewing / Reviewed N
