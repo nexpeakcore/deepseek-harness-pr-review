@@ -1,4 +1,0 @@
-[
-  {"question": "Backend /auth/mobile accepts idToken?", "kind": "free", "answer": "SKIPPED"},
-  {"question": "docs/CHAT.md: code keeps SSE alive. Doc wrong?", "kind": "doc", "answer": "y"}
-]

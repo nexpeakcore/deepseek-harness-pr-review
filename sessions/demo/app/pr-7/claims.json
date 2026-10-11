@@ -1,8 +1,0 @@
-[
-  {"id": "C1", "text": "Google Sign-In is wired into the existing /auth/mobile route by branching on idToken vs email/password, preserving the same response shape.", "category": "feature", "files": ["lib/features/auth/data/auth_api.dart"], "docs": ["docs/API.md"]},
-  {"id": "C2", "text": "The sign-in screen includes a 'Continue with Google' button.", "category": "feature", "files": ["lib/features/auth/ui/sign_in_screen.dart"], "docs": []},
-  {"id": "C3", "text": "The logo layout bug is fixed: the logo no longer renders at full width.", "category": "bugfix", "files": ["lib/features/auth/ui/sign_in_screen.dart"], "docs": []},
-  {"id": "C4", "text": "The submit button is validated in real time based on form field state.", "category": "feature", "files": ["lib/features/auth/ui/sign_in_screen.dart"], "docs": []},
-  {"id": "C5", "text": "Chat unread badge is fixed by moving the realtime listener into AppShell.", "category": "bugfix", "files": ["lib/features/shell/ui/app_shell.dart"], "docs": ["docs/CHAT.md"]},
-  {"id": "C6", "text": "iOS Google Sign-In configuration is updated via GoogleService-Info.plist and Info.plist.", "category": "docs", "files": ["ios/Runner/Info.plist"], "docs": []}
-]

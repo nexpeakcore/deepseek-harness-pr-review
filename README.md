@@ -40,7 +40,7 @@ and the header is honest about what it found: description partial, 2 risks,
 2 stale docs. Tabs split claims, docs, requirement impact and review threads.
 
 Repo-level pages (KPIs, verdict distribution, every open PR with review status)
-and live demo data are included — see [Web dashboard](#web-dashboard).
+are included — see [Web dashboard](#web-dashboard).
 
 ## Features
 
@@ -291,10 +291,6 @@ PARTIAL and RISK items move to Needs a look. Each open PR row has a
 **Review now** / **Re-review** button that runs the review synchronously using
 the repo's auto-review config (skip-human + post-comment flags from
 `autoreview.yml`).
-
-**Demo data** is checked into `sessions/demo/app/` — start the server and open
-http://127.0.0.1:6789/repos/demo/app/pr/7 for a sample review (PR #8 shows a
-a CONTRADICTED verdict + FABRICATED doc), useful for screenshots and documentation.
 
 ## Auto review
 
