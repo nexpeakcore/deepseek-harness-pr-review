@@ -1,6 +1,7 @@
 from src.synthesize import (_overall_verdict, build_comment, build_ping,
-                            build_report, find_report_comment, post_comment,
-                            post_ping, summary_counts)
+                            build_report, build_start_ping,
+                            find_report_comment, post_comment, post_ping,
+                            summary_counts)
 
 SNAPSHOT = {
     "owner": "demo", "repo": "app", "pr": 7,
@@ -228,6 +229,28 @@ def test_ping_marker_is_not_confused_with_main_marker():
     assert PING_MARKER not in MARKER
     ping = build_ping(_snap(), PING_FINDINGS, rounds=1, completed_at="t")
     assert MARKER not in ping
+
+
+def test_start_ping_is_not_confused_with_the_report():
+    from src.synthesize import MARKER, PING_MARKER, START_MARKER
+
+    assert MARKER not in START_MARKER and START_MARKER not in MARKER
+    assert START_MARKER != PING_MARKER
+    start = build_start_ping(_snap(), rounds=2, started_at="t")
+    assert MARKER not in start
+    found = find_report_comment("demo", "app", 7, list_comments=lambda: [
+        {"id": 1, "body": start}, {"id": 2, "body": f"report\n{MARKER}"}])
+    assert found["id"] == 2
+
+
+def test_start_ping_names_the_round_and_commit():
+    start = build_start_ping(_snap(), rounds=3,
+                             started_at="2026-10-20 09:00 UTC")
+    assert "round 3 started" in start
+    assert "`1930e24`" in start
+    assert "2026-10-20 09:00 UTC" in start
+    assert len(start) < 300
+    assert "review started" in build_start_ping({"files": []}, started_at="t")
 
 
 def test_ping_carries_the_headline_numbers():

@@ -436,6 +436,9 @@ def _stub_pipeline(monkeypatch, tmp_path, findings=None):
     monkeypatch.setattr("src.claims.extract_claims", fake_extract_claims)
     monkeypatch.setattr("src.run.setup_workspace", lambda *a, **k: None)
     monkeypatch.setattr("src.run.run_verify", lambda *a, **k: findings)
+    # The start comment goes out before verify; without this a test that only
+    # stubs the report would post it through the real gh.
+    monkeypatch.setattr("src.run.post_ping", lambda *a, **k: None)
     return snapshot, findings
 
 
@@ -447,17 +450,18 @@ def test_main_posts_report_and_round_ping(tmp_path, monkeypatch, capsys):
     """
     snapshot, findings = _stub_pipeline(monkeypatch, tmp_path)
     calls = {}
+    pings = []
 
     monkeypatch.setattr("src.run.post_comment",
                         lambda o, r, n, body: calls.setdefault("report", body) or True)
     monkeypatch.setattr("src.run.find_report_comment",
                         lambda o, r, n: {"html_url": "https://gh/c/1"})
     monkeypatch.setattr("src.run.post_ping",
-                        lambda o, r, n, body: calls.setdefault("ping", body))
+                        lambda o, r, n, body: pings.append(body))
 
     assert main(["demo/app", "7", "--skip-human"]) == 0
-    assert "report" in calls and "ping" in calls
-    ping = calls["ping"]
+    assert "report" in calls and len(pings) == 2   # start, then round ping
+    ping = pings[-1]
     assert "Harness review" in ping
     assert "`abcdef1`" in ping                 # commit đã review
     assert "**1** to look at" in ping          # 1 claim PARTIAL
@@ -569,14 +573,89 @@ def test_ping_still_posts_when_report_comment_url_is_unavailable(tmp_path,
                                                                  monkeypatch):
     """Không tìm được comment báo cáo → ping vẫn phải ra, chỉ thiếu link."""
     _stub_pipeline(monkeypatch, tmp_path)
-    calls = {}
+    pings = []
     monkeypatch.setattr("src.run.post_comment", lambda *a, **k: True)
     monkeypatch.setattr("src.run.find_report_comment", lambda o, r, n: None)
     monkeypatch.setattr("src.run.post_ping",
-                        lambda o, r, n, body: calls.setdefault("ping", body))
+                        lambda o, r, n, body: pings.append(body))
     assert main(["demo/app", "7", "--skip-human"]) == 0
-    assert "Harness review" in calls["ping"]
-    assert "Full report" not in calls["ping"]
+    assert "done" in pings[-1]
+    assert "Full report" not in pings[-1]
+
+
+def test_main_announces_the_round_before_reviewing(tmp_path, monkeypatch, capsys):
+    """The start comment lands before verify, so the PR shows it was picked up."""
+    _, findings = _stub_pipeline(monkeypatch, tmp_path)
+    events = []
+    monkeypatch.setattr("src.run.post_comment",
+                        lambda *a, **k: events.append("report") or True)
+    monkeypatch.setattr("src.run.find_report_comment", lambda *a, **k: None)
+    monkeypatch.setattr("src.run.post_ping",
+                        lambda o, r, n, body: events.append(body))
+    monkeypatch.setattr("src.run.run_verify",
+                        lambda *a, **k: events.append("verify") or findings)
+
+    assert main(["demo/app", "7", "--skip-human"]) == 0
+    start = events[0]
+    assert "round 1 started" in start
+    assert "`abcdef1`" in start
+    assert events[1:3] == ["verify", "report"]
+    assert "Posted start comment." in capsys.readouterr().out
+
+
+def test_start_comment_is_posted_once_per_round(tmp_path, monkeypatch):
+    """A failed attempt retried at the same head is the same round: no repeat.
+
+    A finished round bumps the count, so the next forced review is announced.
+    """
+    _, findings = _stub_pipeline(monkeypatch, tmp_path)
+    _stub_posting(monkeypatch)
+    pings = []
+    monkeypatch.setattr("src.run.post_ping",
+                        lambda o, r, n, body: pings.append(body))
+
+    def flaky(*a, **k):
+        raise RuntimeError("model timed out")
+
+    monkeypatch.setattr("src.run.run_verify", flaky)
+    assert main(["demo/app", "7", "--skip-human"]) == 1
+    monkeypatch.setattr("src.run.run_verify", lambda *a, **k: findings)
+    assert main(["demo/app", "7", "--skip-human"]) == 0
+    assert main(["demo/app", "7", "--skip-human", "--force"]) == 0
+
+    starts = [p for p in pings if "started" in p]
+    assert len(starts) == 2
+    assert "round 1 started" in starts[0]
+    assert "round 2 started" in starts[1]
+
+
+def test_start_comment_is_skipped_when_nothing_is_reviewed(tmp_path, monkeypatch):
+    """--no-post, --no-ping and a cached review all post no start comment."""
+    _stub_pipeline(monkeypatch, tmp_path)
+    _stub_posting(monkeypatch)
+    pings = []
+    monkeypatch.setattr("src.run.post_ping",
+                        lambda o, r, n, body: pings.append(body))
+
+    assert main(["demo/app", "7", "--skip-human", "--no-post"]) == 0
+    assert main(["demo/app", "7", "--skip-human", "--force", "--no-ping"]) == 0
+    assert pings == []
+    assert main(["demo/app", "7", "--skip-human"]) == 0   # findings cached
+    assert not [p for p in pings if "started" in p]
+
+
+def test_start_comment_failure_does_not_fail_the_review(tmp_path, monkeypatch,
+                                                        capsys):
+    _stub_pipeline(monkeypatch, tmp_path)
+    _stub_posting(monkeypatch)
+
+    def boom(o, r, n, body):
+        if "started" in body:
+            raise RuntimeError("gh api failed: rate limited")
+
+    monkeypatch.setattr("src.run.post_ping", boom)
+    assert main(["demo/app", "7", "--skip-human"]) == 0
+    assert "could not post start comment" in capsys.readouterr().err
 
 
 def test_review_prints_phase_progress(tmp_path, monkeypatch, capsys):

@@ -254,6 +254,11 @@ Results land in `sessions/<owner>/<repo>/pr-<n>/report.md` (change the directory
      GitHub raises no notification for an edit, so this is the only part that
      actually reaches subscribers. Disable with `--no-ping`, or
      `ping_comment: false` in `autoreview.yml`.
+   - **A start notice** — posted when a round begins (after the snapshot, before
+     the agents run), naming the round and the commit under review, so a PR
+     shows it was picked up while the review is still running. Posted once per
+     round: a resumed or retried attempt at the same head does not repeat it.
+     The same switches as the round ping turn it off.
 
 ## Running tests
 

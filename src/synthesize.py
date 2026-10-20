@@ -11,6 +11,8 @@ MARKER = "<!-- harness-pr-review -->"
 # comment containing MARKER, so a ping carrying it would be overwritten by the
 # next full report. test_ping_marker_is_not_confused_with_main_marker pins this.
 PING_MARKER = "<!-- harness-pr-review-ping -->"
+# Same rule for the start notice: it must never be mistaken for the report.
+START_MARKER = "<!-- harness-pr-review-start -->"
 STATUS_LABELS = {"PASS": "Matches", "FAIL": "Mismatch", "PARTIAL": "Partial",
                  "UNVERIFIED": "Unverified"}
 
@@ -496,6 +498,26 @@ def build_ping(snapshot: dict, findings: dict, rounds: int | None = None,
              f"{f' ({breakdown})' if breakdown else ''}")
     link = (f"\n\n[Full report ↑]({report_url})" if report_url else "")
     return f"{line1}\n\n{line2}{link}\n\n{PING_MARKER}"
+
+
+def build_start_ping(snapshot: dict, rounds: int | None = None,
+                     started_at: str | None = None) -> str:
+    """Short comment announcing that a review round has started.
+
+    A review takes minutes, and until the round ping lands the PR looks
+    untouched — nobody can tell a queued review from one that never got
+    picked up. The commit tells an author who pushes meanwhile whether the
+    round under way includes their change.
+    """
+    when = started_at or time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime())
+    head = f"round {rounds}" if rounds else "review"
+    sha = (snapshot.get("head_sha") or "")[:7]
+    where = f" · commit `{sha}`" if sha else ""
+    n = len(snapshot.get("files") or [])
+    return (f"⏳ **Harness review — {head} started**{where} · {when}\n\n"
+            f"Reviewing {n} changed file{'' if n == 1 else 's'}. Results "
+            f"follow in a new comment when the round is done.\n\n"
+            f"{START_MARKER}")
 
 
 def find_report_comment(owner: str, repo: str, n: int, *, gh=run_gh,
