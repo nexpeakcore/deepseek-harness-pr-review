@@ -22,7 +22,8 @@ from src.review_proc import (EXIT_INCOMPLETE, format_elapsed,
 from src.human_gate import run_gate
 from src.session_clean import clean_sessions
 from src.synthesize import (build_comment, build_ping, build_report,
-                            find_report_comment, post_comment, post_ping)
+                            build_start_ping, find_report_comment,
+                            post_comment, post_ping)
 from src.verify import run_verify, setup_workspace
 
 
@@ -203,6 +204,38 @@ def _post_round_ping(owner: str, repo: str, num: int, snapshot: dict,
         print("Posted round ping.")
     except (RuntimeError, OSError) as e:
         print(f"warning: could not post round ping: {e}", file=sys.stderr)
+
+
+START_STATE = "start-ping.json"
+
+
+def _post_start_ping(owner: str, repo: str, num: int, snapshot: dict,
+                     session_dir: Path) -> None:
+    """Announce that a review round has started. Never fails the review.
+
+    Posted once per round and head. The poller resumes a review that ran out
+    of time and retries one that failed; both are the same round, and saying
+    "started" again on every pass would bury the PR in identical comments.
+    """
+    state = {"head_sha": snapshot.get("head_sha", ""),
+             "round": (_read_rounds(session_dir) or 0) + 1}
+    path = session_dir / START_STATE
+    try:
+        if json.loads(path.read_text()) == state:
+            return
+    except (OSError, json.JSONDecodeError):
+        pass
+    try:
+        post_ping(owner, repo, num,
+                  build_start_ping(snapshot, rounds=state["round"]))
+    except (RuntimeError, OSError) as e:
+        print(f"warning: could not post start comment: {e}", file=sys.stderr)
+        return
+    try:
+        path.write_text(json.dumps(state))
+    except OSError:
+        pass  # worst case the next attempt announces the round twice
+    print("Posted start comment.", flush=True)
 
 
 def _read_rounds(session_dir: Path) -> int | None:
@@ -594,6 +627,11 @@ def main(argv: list[str] | None = None) -> int:
                 snapshot = build_snapshot(owner, repo, int(num), session_dir)
             _phase(1, "snapshot", f"{len(snapshot['files'])} files, "
                                   f"{len(snapshot['commits'])} commits")
+            # Only when verify is going to run: re-posting a cached review is
+            # not a new round and has nothing to announce.
+            if not (args.dry_run or args.no_post or args.no_ping) and (
+                    args.force or not (session_dir / "findings.json").exists()):
+                _post_start_ping(owner, repo, int(num), snapshot, session_dir)
 
             claims = _load_or_skip("claims.json", session_dir, fresh)
             if claims is None:
